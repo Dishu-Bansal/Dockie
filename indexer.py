@@ -53,55 +53,58 @@ class ScanWorker(QThread):
     progress = pyqtSignal(int)
     finished = pyqtSignal(int)
 
-    def __init__(self, db_conn, cancel_event, is_diff=False):
+    def __init__(self, cancel_event, is_diff=False):
         super().__init__()
-        self._conn = db_conn
         self._cancel = cancel_event
         self._is_diff = is_diff
 
     def run(self):
-        total = 0
-        if self._is_diff:
-            existing = db.get_all_paths(self._conn)
-            for path in find_pdfs(self._cancel):
-                total += 1
-                if path not in existing:
-                    db.insert_scan_result(self._conn, path)
+        conn = db.get_conn()
+        try:
+            total = 0
+            if self._is_diff:
+                existing = db.get_all_paths(conn)
+                for path in find_pdfs(self._cancel):
+                    total += 1
+                    if path not in existing:
+                        db.insert_scan_result(conn, path)
+                        if total % 200 == 0:
+                            conn.commit()
+                    if total % 500 == 0:
+                        self.progress.emit(total)
+                conn.commit()
+            else:
+                for path in find_pdfs(self._cancel):
+                    total += 1
+                    db.insert_scan_result(conn, path)
                     if total % 200 == 0:
-                        self._conn.commit()
-                if total % 500 == 0:
-                    self.progress.emit(total)
-            self._conn.commit()
-        else:
-            for path in find_pdfs(self._cancel):
-                total += 1
-                db.insert_scan_result(self._conn, path)
-                if total % 200 == 0:
-                    self._conn.commit()
-                    self.progress.emit(total)
-            self._conn.commit()
+                        conn.commit()
+                        self.progress.emit(total)
+                conn.commit()
 
-        self.progress.emit(total)
-        self.finished.emit(total)
+            self.progress.emit(total)
+            self.finished.emit(total)
+        finally:
+            conn.close()
 
 
 class ExtractWorker(QThread):
     file_done = pyqtSignal(str, bool)
     all_done = pyqtSignal()
 
-    def __init__(self, db_conn, pause_event, cancel_event):
+    def __init__(self, pause_event, cancel_event):
         super().__init__()
-        self._conn = db_conn
         self._pause = pause_event
         self._cancel = cancel_event
 
     def run(self):
+        conn = db.get_conn()
         try:
             while not self._cancel.is_set():
                 if self._pause.is_set():
                     self.msleep(200)
                     continue
-                rows = db.get_pending_batch(self._conn, limit=1)
+                rows = db.get_pending_batch(conn, limit=1)
                 if not rows:
                     self.msleep(1000)
                     continue
@@ -110,11 +113,12 @@ class ExtractWorker(QThread):
                     text = extract_text(path)
                 except Exception:
                     text = ""
-                db.mark_extracted(self._conn, path, text)
-                self._conn.commit()
+                db.mark_extracted(conn, path, text)
+                conn.commit()
                 self.file_done.emit(filename, bool(text))
         finally:
             self.all_done.emit()
+            conn.close()
 
 
 # ── GUI ──
@@ -244,7 +248,7 @@ class IndexerWindow(QWidget):
 
     def _start_scan(self, is_diff=False):
         self.phase = 'scan'
-        self.scanner = ScanWorker(self.db_conn, self._cancel_event, is_diff=is_diff)
+        self.scanner = ScanWorker(self._cancel_event, is_diff=is_diff)
         self.scanner.progress.connect(self._on_scan_progress)
         self.scanner.finished.connect(self._on_scan_finished)
         self.scanner.start()
@@ -258,9 +262,7 @@ class IndexerWindow(QWidget):
         self.files_found = db.get_total_count(self.db_conn)
         self.files_done = db.get_indexed_count(self.db_conn)
         self.lbl_title.setText('FileFinder — Indexing...')
-        self.extractor = ExtractWorker(
-            self.db_conn, self._pause_event, self._cancel_event
-        )
+        self.extractor = ExtractWorker(self._pause_event, self._cancel_event)
         self.extractor.file_done.connect(self._on_file_done)
         self.extractor.all_done.connect(self._on_all_done)
         self.extractor.start()

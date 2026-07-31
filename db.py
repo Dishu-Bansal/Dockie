@@ -9,9 +9,9 @@ DB_PATH = os.path.join(DB_DIR, 'index.db')
 
 
 def get_conn():
-    """Return a connection. Caller must close it."""
+    """Return a connection. Each thread must call this — SQLite connections are NOT thread-safe."""
     os.makedirs(DB_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
     return conn
