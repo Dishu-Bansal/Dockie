@@ -147,49 +147,64 @@ def should_skip_root(dirpath, drive):
 # ── Workers ──
 class ScanWorker(QThread):
     """Walks the filesystem, finds PDFs, pushes paths to a queue."""
-    found_path = pyqtSignal(str)
     progress = pyqtSignal(int, int, str)   # dirs_visited, pdfs_found, current_dir
     finished = pyqtSignal(int)              # total pdfs found
 
-    def __init__(self, path_queue, cancel_event):
+    def __init__(self, path_queue, cancel_event, scanning_event):
         super().__init__()
         self.path_queue = path_queue
         self._cancel = cancel_event
+        self._scanning = scanning_event  # cleared when scan is truly done
 
     def run(self):
-        roots = get_available_roots()
-        user_skip_set = build_user_skip_set()
-        total_found = 0
+        try:
+            self._scanning.set()
+            roots = get_available_roots()
+            user_skip_set = build_user_skip_set()
+            total_found = 0
+            last_progress = 0
 
-        for root in roots:
-            if self._cancel.is_set():
-                break
-            drive = root.rstrip('\\/')
-            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            for root in roots:
                 if self._cancel.is_set():
                     break
-                if should_skip_root(dirpath, drive):
-                    dirnames.clear()
-                    continue
-                dirnames[:] = [d for d in dirnames if d not in PRUNED_DIR_NAMES]
-                dpn = os.path.normpath(dirpath)
-                skip = False
-                for sp in user_skip_set:
-                    if dpn == sp or dpn.startswith(sp + os.sep):
-                        dirnames.clear()
-                        skip = True
+                drive = root.rstrip('\\/')
+                for dirpath, dirnames, filenames in self._walk(root):
+                    if self._cancel.is_set():
                         break
-                if skip:
-                    continue
-                for fname in filenames:
-                    if fname.lower().endswith('.pdf'):
-                        full = os.path.join(dirpath, fname)
-                        total_found += 1
-                        self.path_queue.put(full)
-                        self.found_path.emit(full)
-                self.progress.emit(0, total_found, dirpath)
+                    if should_skip_root(dirpath, drive):
+                        dirnames.clear()
+                        continue
+                    dirnames[:] = [d for d in dirnames if d not in PRUNED_DIR_NAMES]
+                    dpn = os.path.normpath(dirpath)
+                    skip = False
+                    for sp in user_skip_set:
+                        if dpn == sp or dpn.startswith(sp + os.sep):
+                            dirnames.clear()
+                            skip = True
+                            break
+                    if skip:
+                        continue
+                    for fname in filenames:
+                        if fname.lower().endswith('.pdf'):
+                            full = os.path.join(dirpath, fname)
+                            total_found += 1
+                            self.path_queue.put(full)
+                    # Throttle progress to every 3 seconds
+                    now = time.time()
+                    if now - last_progress >= 3:
+                        self.progress.emit(0, total_found, dirpath)
+                        last_progress = now
 
-        self.finished.emit(total_found)
+            self.finished.emit(total_found)
+        finally:
+            self._scanning.clear()
+
+    def _walk(self, root):
+        """os.walk wrapper that catches PermissionError and moves on."""
+        try:
+            yield from os.walk(root, followlinks=False)
+        except PermissionError:
+            pass
 
 
 class ExtractWorker(QThread):
@@ -197,38 +212,38 @@ class ExtractWorker(QThread):
     file_done = pyqtSignal(str, bool)       # path, has_text
     all_done = pyqtSignal()
 
-    def __init__(self, path_queue, db_conn, pause_event, cancel_event):
+    def __init__(self, path_queue, db_conn, pause_event, cancel_event, scanning_event):
         super().__init__()
         self.path_queue = path_queue
         self.db_conn = db_conn
         self._pause = pause_event
         self._cancel = cancel_event
+        self._scanning = scanning_event
 
     def run(self):
-        consecutive_empty = 0
-        while not self._cancel.is_set():
-            if self._pause.is_set():
-                self.msleep(200)
-                continue
+        try:
+            while not self._cancel.is_set():
+                if self._pause.is_set():
+                    self.msleep(200)
+                    continue
 
-            try:
-                path = self.path_queue.get(timeout=0.5)
-                consecutive_empty = 0
-            except queue.Empty:
-                consecutive_empty += 1
-                if consecutive_empty >= 6:
-                    break
-                continue
+                try:
+                    path = self.path_queue.get(timeout=0.5)
+                except queue.Empty:
+                    # Only exit if scanner is done AND queue is truly empty
+                    if not self._scanning.is_set():
+                        break
+                    continue
 
-            text = extract_text(path)
-            has_text = bool(text)
-            try:
-                store_file(self.db_conn, path, text)
-                self.file_done.emit(path, has_text)
-            except Exception:
-                self.file_done.emit(path, False)
-
-        self.all_done.emit()
+                text = extract_text(path)
+                has_text = bool(text)
+                try:
+                    store_file(self.db_conn, path, text)
+                    self.file_done.emit(path, has_text)
+                except Exception:
+                    self.file_done.emit(path, False)
+        finally:
+            self.all_done.emit()
 
 
 # ── GUI ──
@@ -391,23 +406,24 @@ class IndexerWindow(QWidget):
     # ── Workers ──
     def _init_workers(self):
         self.db_conn = init_db()
+        self._scanning_event = threading.Event()
 
-        self.scanner = ScanWorker(self.path_queue, self._cancel_event)
+        self.scanner = ScanWorker(
+            self.path_queue, self._cancel_event, self._scanning_event
+        )
         self.scanner.progress.connect(self._on_scan_progress)
         self.scanner.finished.connect(self._on_scan_finished)
 
         self.extractor = ExtractWorker(
             self.path_queue, self.db_conn,
-            self._pause_event, self._cancel_event
+            self._pause_event, self._cancel_event, self._scanning_event
         )
         self.extractor.file_done.connect(self._on_file_done)
         self.extractor.all_done.connect(self._on_all_done)
 
-        # Start both
         self.scanner.start()
         self.extractor.start()
 
-        # Timer to update stats from queue
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_stats)
         self._timer.start(500)
