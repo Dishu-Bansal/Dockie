@@ -26,26 +26,32 @@ import db
 
 # ── File Watcher ──
 class PdfWatcher(FileSystemEventHandler):
-    def __init__(self, db_conn):
-        self._conn = db_conn
+    def __init__(self):
+        pass
 
     def on_created(self, event):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
             return
-        db.insert_scan_result(self._conn, event.src_path)
-        self._conn.commit()
+        self._with_conn(lambda c: db.insert_scan_result(c, event.src_path))
 
     def on_modified(self, event):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
             return
-        db.mark_extracted(self._conn, event.src_path, None)
-        self._conn.commit()
+        self._with_conn(lambda c: db.mark_extracted(c, event.src_path, None))
 
     def on_deleted(self, event):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
             return
-        db.mark_deleted(self._conn, event.src_path)
-        self._conn.commit()
+        self._with_conn(lambda c: db.mark_deleted(c, event.src_path))
+
+    @staticmethod
+    def _with_conn(fn):
+        c = db.get_conn()
+        try:
+            fn(c)
+            c.commit()
+        finally:
+            c.close()
 
 
 # ── Workers ──
@@ -275,7 +281,7 @@ class IndexerWindow(QWidget):
                 if os.path.exists(r):
                     roots.append(r)
             self._watcher = Observer()
-            self._handler = PdfWatcher(self.db_conn)
+            self._handler = PdfWatcher()
             for r in roots:
                 self._watcher.schedule(self._handler, r, recursive=True)
             self._watcher.start()
