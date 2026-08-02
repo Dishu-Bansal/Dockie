@@ -317,10 +317,12 @@ class IndexerWindow(QWidget):
         self.files_done = db.get_indexed_count(self.db_conn)
         self._refresh()
         self.lbl_title.setText('FileFinder — Done')
-        self.lbl_current.setText('All files indexed.')
+        self.lbl_current.setText('All files indexed. Hiding to tray…')
         self.btn_pause.setEnabled(False)
         self.btn_cancel.setText('Close')
         self._start_watcher()
+        # Auto-hide to tray after 3 seconds
+        QTimer.singleShot(3000, self._hide_to_tray)
 
     def _refresh(self):
         pending = max(0, self.files_found - self.files_done)
