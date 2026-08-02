@@ -4,6 +4,7 @@ Queries the indexed DB as the user types, shows ranked results.
 """
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -76,6 +77,7 @@ class SearchBar(QWidget):
             QListWidget::item {
                 padding: 8px 16px;
                 border-bottom: 1px solid #313244;
+                min-height: 50px;
             }
             QListWidget::item:selected {
                 background-color: #45475a;
@@ -162,17 +164,23 @@ class SearchBar(QWidget):
                 wl.setContentsMargins(0, 2, 0, 2)
                 wl.setSpacing(1)
 
-                name_lbl = QLabel(filename)
+                name_lbl = QLabel(self._highlight(filename, self.input.text()))
                 name_lbl.setFont(QFont('Segoe UI', 12, QFont.Weight.Medium))
                 name_lbl.setStyleSheet('color: #cdd6f4;')
+                name_lbl.setTextFormat(Qt.TextFormat.RichText)
                 wl.addWidget(name_lbl)
 
                 if snippet:
-                    snip_lbl = QLabel(snippet)
+                    snip_lbl = QLabel(self._highlight(snippet, self.input.text()))
                     snip_lbl.setFont(QFont('Segoe UI', 10))
                     snip_lbl.setWordWrap(True)
                     snip_lbl.setMaximumHeight(36)
+                    snip_lbl.setTextFormat(Qt.TextFormat.RichText)
                     wl.addWidget(snip_lbl)
+                else:
+                    spacer = QLabel('')
+                    spacer.setFixedHeight(4)
+                    wl.addWidget(spacer)
 
                 w.setLayout(wl)
 
@@ -184,6 +192,22 @@ class SearchBar(QWidget):
 
         self.results.setVisible(True)
         self.setFixedHeight(min(520, 60 + self.results.count() * 72 + 10))
+
+    @staticmethod
+    def _highlight(text, query):
+        """Wrap all occurrences of query in <b> tags for bold display."""
+        q = query.strip()
+        if not q or not text:
+            return text
+        safe = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        q_safe = q.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        escaped = re.escape(q_safe)
+        return re.sub(
+            f'({escaped})',
+            r'<b style="color:#fab387;">\1</b>',
+            safe,
+            flags=re.IGNORECASE
+        )
 
     def _on_enter(self):
         if self.results.count() == 0:

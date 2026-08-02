@@ -320,11 +320,6 @@ class IndexerWindow(QWidget):
         self.lbl_current.setText('All files indexed.')
         self.btn_pause.setEnabled(False)
         self.btn_cancel.setText('Close')
-        try:
-            self.btn_cancel.clicked.disconnect()
-        except Exception:
-            pass
-        self.btn_cancel.clicked.connect(self.close)
         self._start_watcher()
 
     def _refresh(self):
@@ -365,6 +360,9 @@ class IndexerWindow(QWidget):
             self.btn_pause.setText('Resume')
 
     def _cancel(self):
+        if self.phase == 'done':
+            self._shutdown()
+            return
         self._cancel_event.set()
         try:
             self._watcher.stop()
@@ -375,6 +373,9 @@ class IndexerWindow(QWidget):
             self._hotkey_listener.stop()
         if hasattr(self, '_timer'):
             self._timer.stop()
+        self._shutdown()
+
+    def _shutdown(self):
         if self.db_conn:
             self.db_conn.close()
         self.tray.hide()
