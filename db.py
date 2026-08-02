@@ -95,3 +95,52 @@ def get_indexed_count(conn):
 def file_exists(conn, path):
     row = conn.execute('SELECT 1 FROM files WHERE path = ?', (path,)).fetchone()
     return row is not None
+
+
+def search(conn, query, limit=20):
+    """Search indexed files by filename and content. Returns ranked results.
+    Each result: (path, filename, snippet, rank) — lower rank = better match."""
+    q = query.strip()
+    if not q:
+        return []
+
+    like = f'%{q}%'
+    # Prefer exact filename prefix, then filename contains, then content match
+    rows = conn.execute('''
+        SELECT path, filename,
+               CASE
+                   WHEN filename LIKE ? THEN 1
+                   WHEN filename LIKE ? THEN 2
+                   WHEN text IS NOT NULL AND text LIKE ? THEN 3
+                   ELSE 4
+               END AS rank,
+               COALESCE(text, '') AS fulltext
+        FROM files
+        WHERE text IS NOT NULL
+          AND (filename LIKE ? OR (text IS NOT NULL AND text LIKE ?))
+        ORDER BY rank, filename
+        LIMIT ?
+    ''', (f'{q}%', like, like, like, like, limit)).fetchall()
+
+    results = []
+    for path, filename, rank, fulltext in rows:
+        snippet = _make_snippet(fulltext, q)
+        results.append((path, filename, snippet, rank))
+    return results
+
+
+def _make_snippet(text, query, context=80):
+    """Extract a snippet of text around the first occurrence of query."""
+    if not text or not query:
+        return ''
+    idx = text.lower().find(query.lower())
+    if idx == -1:
+        return text[:context].strip()
+    start = max(0, idx - context // 2)
+    end = min(len(text), idx + len(query) + context // 2)
+    snip = text[start:end].replace('\n', ' ').strip()
+    if start > 0:
+        snip = '…' + snip
+    if end < len(text):
+        snip = snip + '…'
+    return snip

@@ -21,6 +21,7 @@ from watchdog.events import FileSystemEventHandler
 
 from scanner import find_pdfs
 from content_extractor import extract_text
+from search_ui import SearchBar, SearchBridge, start_listener
 import db
 
 
@@ -142,6 +143,7 @@ class IndexerWindow(QWidget):
         db.init_db(self.db_conn)
         self._init_ui()
         self._init_tray()
+        self._init_search()
         self._start()
 
     def _init_ui(self):
@@ -241,6 +243,12 @@ class IndexerWindow(QWidget):
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
+
+    def _init_search(self):
+        self._search_bar = SearchBar()
+        self._search_bridge = SearchBridge()
+        self._search_bridge.show_signal.connect(self._search_bar.show_and_focus)
+        self._hotkey_listener = start_listener(self._search_bridge)
 
     def _start(self):
         total = db.get_total_count(self.db_conn)
@@ -363,6 +371,8 @@ class IndexerWindow(QWidget):
             self._watcher.join(timeout=2)
         except Exception:
             pass
+        if hasattr(self, '_hotkey_listener'):
+            self._hotkey_listener.stop()
         if hasattr(self, '_timer'):
             self._timer.stop()
         if self.db_conn:
