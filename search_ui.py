@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLineEdit, QListWidget,
     QListWidgetItem, QLabel, QFrame,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSize
 from PyQt6.QtGui import QFont, QKeyEvent, QColor, QPalette
 
 from pynput import keyboard
@@ -174,19 +174,17 @@ class SearchBar(QWidget):
                     snip_lbl = QLabel(self._highlight(snippet, self.input.text()))
                     snip_lbl.setFont(QFont('Segoe UI', 10))
                     snip_lbl.setWordWrap(True)
-                    snip_lbl.setMaximumHeight(36)
                     snip_lbl.setTextFormat(Qt.TextFormat.RichText)
                     wl.addWidget(snip_lbl)
-                else:
-                    spacer = QLabel('')
-                    spacer.setFixedHeight(4)
-                    wl.addWidget(spacer)
 
                 w.setLayout(wl)
 
                 item = QListWidgetItem()
                 item.setData(Qt.ItemDataRole.UserRole, path)
-                item.setSizeHint(w.sizeHint())
+                h = name_lbl.sizeHint().height() + 10
+                if snippet:
+                    h += snip_lbl.sizeHint().height() + 4
+                item.setSizeHint(QSize(0, h))
                 self.results.addItem(item)
                 self.results.setItemWidget(item, w)
 
