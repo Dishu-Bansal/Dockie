@@ -105,7 +105,6 @@ def search(conn, query, limit=20):
         return []
 
     like = f'%{q}%'
-    # Prefer exact filename prefix, then filename contains, then content match
     rows = conn.execute('''
         SELECT path, filename,
                CASE
@@ -116,8 +115,8 @@ def search(conn, query, limit=20):
                END AS rank,
                COALESCE(text, '') AS fulltext
         FROM files
-        WHERE text IS NOT NULL
-          AND (filename LIKE ? OR (text IS NOT NULL AND text LIKE ?))
+        WHERE filename LIKE ?
+           OR (text IS NOT NULL AND text LIKE ?)
         ORDER BY rank, filename
         LIMIT ?
     ''', (f'{q}%', like, like, like, like, limit)).fetchall()
@@ -130,12 +129,13 @@ def search(conn, query, limit=20):
 
 
 def _make_snippet(text, query, context=80):
-    """Extract a snippet of text around the first occurrence of query."""
+    """Extract a snippet of text around the first occurrence of query.
+    Returns empty string when text is empty or query isn't found in text."""
     if not text or not query:
         return ''
     idx = text.lower().find(query.lower())
     if idx == -1:
-        return text[:context].strip()
+        return ''
     start = max(0, idx - context // 2)
     end = min(len(text), idx + len(query) + context // 2)
     snip = text[start:end].replace('\n', ' ').strip()
