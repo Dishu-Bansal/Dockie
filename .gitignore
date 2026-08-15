@@ -1,1 +1,4 @@
 __pycache__/
+.venv/
+pdfs_found.txt
+*.db

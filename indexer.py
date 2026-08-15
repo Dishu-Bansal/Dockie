@@ -1,262 +1,153 @@
 """
-Indexer GUI — scans system for PDFs, extracts text, stores in SQLite.
-Shows a bottom-right popup with progress, system tray, pause/cancel/hide.
+Indexer GUI — two-phase: scan (populate DB) then extract (from DB).
+File watcher keeps DB in sync. Crash-proof: resumes extraction on restart.
+Bottom-right popup, system tray, pause/cancel/hide.
 """
 
 import os
 import sys
 import time
-import sqlite3
-import queue
 import threading
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QProgressBar, QPushButton, QSystemTrayIcon, QMenu,
 )
-from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer,
-)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QIcon, QFont, QAction
 
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+from scanner import find_pdfs
 from content_extractor import extract_text
+from search_ui import SearchBar, SearchBridge, start_listener
+import db
 
 
-# ── Paths ──
-DB_DIR = os.path.join(os.path.expanduser('~'), '.filefinder')
-DB_PATH = os.path.join(DB_DIR, 'index.db')
+# ── File Watcher ──
+class PdfWatcher(FileSystemEventHandler):
+    def __init__(self):
+        pass
 
-# ── Exclusion lists (shared with pdf_scanner.py) ──
-SYSTEM_ROOT_NAMES = {
-    '$Recycle.Bin', 'System Volume Information', '$WINDOWS.~TMP',
-    '$Windows.~WS', '$WinREAgent', 'Recovery', 'MSOCache',
-    'Config.Msi', 'PerfLogs', 'boot', 'EFI',
-}
+    def on_created(self, event):
+        if event.is_directory or not event.src_path.lower().endswith('.pdf'):
+            return
+        self._with_conn(lambda c: db.insert_scan_result(c, event.src_path))
 
-SKIP_PATH_PREFIXES_C = [
-    r'C:\Windows', r'C:\Windows.old', r'C:\WinNT',
-    r'C:\Program Files', r'C:\Program Files (x86)',
-    r'C:\ProgramData', r'C:\Documents and Settings',
-]
+    def on_modified(self, event):
+        if event.is_directory or not event.src_path.lower().endswith('.pdf'):
+            return
+        self._with_conn(lambda c: db.mark_extracted(c, event.src_path, None))
 
-PRUNED_DIR_NAMES = {
-    'node_modules', '.venv', 'venv', '.env', 'vendor',
-    'bower_components', '.yarn', '.pnpm-store',
-    '__pycache__', '.pytest_cache', '.mypy_cache', '.tox',
-    '.nox', 'dist', 'build', 'eggs', '.eggs',
-    '.git', '.svn', '.hg',
-    '.npm', '.cargo', '.gradle', '.m2', '.ivy2', '.sbt',
-    '.nuget', '.rustup',
-    'target', 'obj', 'bin', 'Debug', 'Release', 'x64', 'x86',
-    'Generated', 'out', '.next', '.nuxt',
-    '.cache', 'cache', '.thumbnails', 'thumbnails',
-    'tmp', 'temp', 'logs', '.log',
-    'Sdk', 'WUDownloadCache', 'vcpkg', 'Anaconda',
-}
+    def on_deleted(self, event):
+        if event.is_directory or not event.src_path.lower().endswith('.pdf'):
+            return
+        self._with_conn(lambda c: db.mark_deleted(c, event.src_path))
 
-SKIP_USER_SUBDIRS = [
-    r'AppData\Local\Temp', r'AppData\Local\Microsoft',
-    r'AppData\Local\Packages', r'AppData\Local\Programs',
-    r'AppData\Local\MicrosoftEdge', r'AppData\Local\Google',
-    r'AppData\Local\Mozilla', r'AppData\Local\pip',
-    r'AppData\Local\pnpm', r'AppData\Local\Yarn',
-    r'AppData\Local\NuGet', r'AppData\Local\Docker',
-    r'AppData\Local\JetBrains', r'AppData\Local\cache',
-    r'AppData\Roaming\npm', r'AppData\Roaming\Code',
-    r'AppData\Roaming\JetBrains', r'AppData\Roaming\Docker',
-    r'AppData\Roaming\Composer', r'AppData\Roaming\NuGet',
-    r'AppData\LocalLow',
-    r'.nuget', r'.m2', r'.gradle', r'.cargo', r'.rustup', r'.yarn',
-]
-
-
-# ── Database ──
-def init_db():
-    os.makedirs(DB_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute('''CREATE TABLE IF NOT EXISTS files (
-        path TEXT PRIMARY KEY,
-        filename TEXT,
-        text TEXT,
-        size INTEGER,
-        modified REAL,
-        indexed_at REAL
-    )''')
-    conn.commit()
-    return conn
-
-
-def store_file(conn, path, text):
-    filename = os.path.basename(path)
-    try:
-        stat = os.stat(path)
-        size = stat.st_size
-        modified = stat.st_mtime
-    except OSError:
-        size = 0
-        modified = 0
-    now = time.time()
-    conn.execute(
-        'INSERT OR REPLACE INTO files (path, filename, text, size, modified, indexed_at) '
-        'VALUES (?, ?, ?, ?, ?, ?)',
-        (path, filename, text, size, modified, now)
-    )
-    conn.commit()
-
-
-# ── Helpers ──
-def get_available_roots():
-    roots = []
-    for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-        root = f'{letter}:\\'
-        if os.path.exists(root):
-            roots.append(root)
-    return roots
-
-
-def build_user_skip_set():
-    skip_set = set()
-    users_base = r'C:\Users'
-    if os.path.exists(users_base):
+    @staticmethod
+    def _with_conn(fn):
+        c = db.get_conn()
         try:
-            for entry in os.scandir(users_base):
-                if entry.is_dir():
-                    for sub in SKIP_USER_SUBDIRS:
-                        sp = os.path.normpath(os.path.join(entry.path, sub))
-                        skip_set.add(sp)
-        except PermissionError:
-            pass
-    return skip_set
-
-
-def should_skip_root(dirpath, drive):
-    dp = os.path.normpath(dirpath)
-    if drive == 'C:':
-        for prefix in SKIP_PATH_PREFIXES_C:
-            pn = os.path.normpath(prefix)
-            if dp == pn or dp.startswith(pn + os.sep):
-                return True
-    drive_norm = os.path.normpath(drive + '\\')
-    parent = os.path.dirname(dp)
-    if parent == drive_norm or parent == drive_norm.rstrip(os.sep):
-        if os.path.basename(dp) in SYSTEM_ROOT_NAMES:
-            return True
-    return False
+            fn(c)
+            c.commit()
+        finally:
+            c.close()
 
 
 # ── Workers ──
 class ScanWorker(QThread):
-    """Walks the filesystem, finds PDFs, pushes paths to a queue."""
-    found_path = pyqtSignal(str)
-    progress = pyqtSignal(int, int, str)   # dirs_visited, pdfs_found, current_dir
-    finished = pyqtSignal(int)              # total pdfs found
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(int)
 
-    def __init__(self, path_queue, cancel_event):
+    def __init__(self, cancel_event, is_diff=False):
         super().__init__()
-        self.path_queue = path_queue
         self._cancel = cancel_event
+        self._is_diff = is_diff
 
     def run(self):
-        roots = get_available_roots()
-        user_skip_set = build_user_skip_set()
-        total_found = 0
+        conn = db.get_conn()
+        try:
+            total = 0
+            if self._is_diff:
+                existing = db.get_all_paths(conn)
+                for path in find_pdfs(self._cancel):
+                    total += 1
+                    if path not in existing:
+                        db.insert_scan_result(conn, path)
+                        if total % 200 == 0:
+                            conn.commit()
+                    if total % 500 == 0:
+                        self.progress.emit(total)
+                conn.commit()
+            else:
+                for path in find_pdfs(self._cancel):
+                    total += 1
+                    db.insert_scan_result(conn, path)
+                    if total % 200 == 0:
+                        conn.commit()
+                        self.progress.emit(total)
+                conn.commit()
 
-        for root in roots:
-            if self._cancel.is_set():
-                break
-            drive = root.rstrip('\\/')
-            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-                if self._cancel.is_set():
-                    break
-                if should_skip_root(dirpath, drive):
-                    dirnames.clear()
-                    continue
-                dirnames[:] = [d for d in dirnames if d not in PRUNED_DIR_NAMES]
-                dpn = os.path.normpath(dirpath)
-                skip = False
-                for sp in user_skip_set:
-                    if dpn == sp or dpn.startswith(sp + os.sep):
-                        dirnames.clear()
-                        skip = True
-                        break
-                if skip:
-                    continue
-                for fname in filenames:
-                    if fname.lower().endswith('.pdf'):
-                        full = os.path.join(dirpath, fname)
-                        total_found += 1
-                        self.path_queue.put(full)
-                        self.found_path.emit(full)
-                self.progress.emit(0, total_found, dirpath)
-
-        self.finished.emit(total_found)
+            self.progress.emit(total)
+            self.finished.emit(total)
+        finally:
+            conn.close()
 
 
 class ExtractWorker(QThread):
-    """Pops paths from queue, extracts text, stores in DB."""
-    file_done = pyqtSignal(str, bool)       # path, has_text
+    file_done = pyqtSignal(str, bool)
     all_done = pyqtSignal()
 
-    def __init__(self, path_queue, db_conn, pause_event, cancel_event):
+    def __init__(self, pause_event, cancel_event):
         super().__init__()
-        self.path_queue = path_queue
-        self.db_conn = db_conn
         self._pause = pause_event
         self._cancel = cancel_event
 
     def run(self):
-        consecutive_empty = 0
-        while not self._cancel.is_set():
-            if self._pause.is_set():
-                self.msleep(200)
-                continue
-
-            try:
-                path = self.path_queue.get(timeout=0.5)
-                consecutive_empty = 0
-            except queue.Empty:
-                consecutive_empty += 1
-                if consecutive_empty >= 6:
-                    break
-                continue
-
-            text = extract_text(path)
-            has_text = bool(text)
-            try:
-                store_file(self.db_conn, path, text)
-                self.file_done.emit(path, has_text)
-            except Exception:
-                self.file_done.emit(path, False)
-
-        self.all_done.emit()
+        conn = db.get_conn()
+        try:
+            while not self._cancel.is_set():
+                if self._pause.is_set():
+                    self.msleep(200)
+                    continue
+                rows = db.get_pending_batch(conn, limit=1)
+                if not rows:
+                    self.msleep(1000)
+                    continue
+                path, filename = rows[0]
+                try:
+                    text = extract_text(path)
+                except Exception:
+                    text = ""
+                db.mark_extracted(conn, path, text)
+                conn.commit()
+                self.file_done.emit(filename, bool(text))
+        finally:
+            self.all_done.emit()
+            conn.close()
 
 
 # ── GUI ──
 class IndexerWindow(QWidget):
-    """Bottom-right popup with progress, hide/pause/cancel buttons."""
 
     def __init__(self):
         super().__init__()
-        self.path_queue = queue.Queue()
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
-
         self.files_found = 0
-        self.files_indexed = 0
+        self.files_done = 0
         self.files_empty = 0
-        self.scan_done = False
-        self.extract_done = False
-        self.running = True
-
-        self.db_conn = None  # set after init_db
-
+        self.phase = 'scan'
+        self.db_conn = db.get_conn()
+        db.init_db(self.db_conn)
         self._init_ui()
         self._init_tray()
-        self._init_workers()
+        self._init_search()
+        self._start()
 
-    # ── UI setup ──
     def _init_ui(self):
-        self.setWindowTitle('FileFinder — Indexing')
+        self.setWindowTitle('FileFinder')
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
@@ -264,73 +155,43 @@ class IndexerWindow(QWidget):
         )
         self.setFixedSize(420, 220)
         self.setStyleSheet('''
-            QWidget {
-                background-color: #1e1e2e;
-                color: #cdd6f4;
-                font-family: "Segoe UI", sans-serif;
-                font-size: 12px;
-                border: 1px solid #45475a;
-                border-radius: 10px;
-            }
-            QProgressBar {
-                border: 1px solid #45475a;
-                border-radius: 4px;
-                background-color: #313244;
-                text-align: center;
-                color: #cdd6f4;
-                height: 18px;
-            }
-            QProgressBar::chunk {
-                background-color: #89b4fa;
-                border-radius: 3px;
-            }
-            QPushButton {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 5px;
-                padding: 4px 12px;
-                color: #cdd6f4;
-            }
-            QPushButton:hover {
-                background-color: #45475a;
-            }
-            QPushButton#btnCancel {
-                background-color: #f38ba8;
-                color: #1e1e2e;
-            }
-            QPushButton#btnCancel:hover {
-                background-color: #f2cdcd;
-            }
+            QWidget { background-color: #1e1e2e; color: #cdd6f4;
+                font-family: "Segoe UI", sans-serif; font-size: 12px;
+                border: 1px solid #45475a; border-radius: 10px; }
+            QProgressBar { border: 1px solid #45475a; border-radius: 4px;
+                background-color: #313244; text-align: center;
+                color: #cdd6f4; height: 18px; }
+            QProgressBar::chunk { background-color: #89b4fa; border-radius: 3px; }
+            QPushButton { background-color: #313244; border: 1px solid #45475a;
+                border-radius: 5px; padding: 4px 12px; color: #cdd6f4; }
+            QPushButton:hover { background-color: #45475a; }
+            QPushButton#btnCancel { background-color: #f38ba8; color: #1e1e2e; }
+            QPushButton#btnCancel:hover { background-color: #f2cdcd; }
         ''')
 
         layout = QVBoxLayout()
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(8)
 
-        # Title
-        title = QLabel('FileFinder — Indexing PDFs')
-        title.setFont(QFont('Segoe UI', 13, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        self.lbl_title = QLabel('FileFinder — Scanning...')
+        self.lbl_title.setFont(QFont('Segoe UI', 13, QFont.Weight.Bold))
+        self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.lbl_title)
 
-        # Stats row
-        self.lbl_stats = QLabel('Found: 0  |  Indexed: 0  |  Pending: 0')
+        self.lbl_stats = QLabel('')
         self.lbl_stats.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_stats)
 
-        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
 
-        # Current file
         self.lbl_current = QLabel('Starting scan...')
         self.lbl_current.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_current.setWordWrap(True)
         layout.addWidget(self.lbl_current)
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
@@ -340,6 +201,7 @@ class IndexerWindow(QWidget):
 
         self.btn_pause = QPushButton('Pause')
         self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_pause.setEnabled(False)
         btn_layout.addWidget(self.btn_pause)
 
         self.btn_cancel = QPushButton('Cancel')
@@ -350,114 +212,135 @@ class IndexerWindow(QWidget):
         layout.addLayout(btn_layout)
         self.setLayout(layout)
 
-        # Position at bottom-right
         screen = QApplication.primaryScreen().availableGeometry()
         self.move(screen.right() - self.width() - 20,
                    screen.bottom() - self.height() - 20)
 
-    # ── System tray ──
     def _init_tray(self):
-        self.tray = QSystemTrayIcon(self)
-        self.tray.setToolTip('FileFinder — Indexing PDFs')
-
-        # Use a simple colored pixmap as icon
         from PyQt6.QtGui import QPixmap, QPainter, QColor
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setToolTip('FileFinder')
         pix = QPixmap(32, 32)
         pix.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pix)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor('#89b4fa'))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(4, 4, 24, 24)
-        painter.setPen(QColor('#1e1e2e'))
-        font = QFont('Segoe UI', 14, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, 'F')
-        painter.end()
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor('#89b4fa'))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(4, 4, 24, 24)
+        p.setPen(QColor('#1e1e2e'))
+        p.setFont(QFont('Segoe UI', 14, QFont.Weight.Bold))
+        p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, 'F')
+        p.end()
         self.tray.setIcon(QIcon(pix))
-
         menu = QMenu()
-        action_show = QAction('Show', menu)
-        action_show.triggered.connect(self._show_from_tray)
-        menu.addAction(action_show)
+        a = QAction('Show', menu)
+        a.triggered.connect(self._show_from_tray)
+        menu.addAction(a)
         menu.addSeparator()
-        action_exit = QAction('Exit', menu)
-        action_exit.triggered.connect(self._cancel)
-        menu.addAction(action_exit)
+        a2 = QAction('Exit', menu)
+        a2.triggered.connect(self._cancel)
+        menu.addAction(a2)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
-    # ── Workers ──
-    def _init_workers(self):
-        self.db_conn = init_db()
+    def _init_search(self):
+        self._search_bar = SearchBar()
+        self._search_bridge = SearchBridge()
+        self._search_bridge.show_signal.connect(self._search_bar.show_and_focus)
+        self._hotkey_listener = start_listener(self._search_bridge)
 
-        self.scanner = ScanWorker(self.path_queue, self._cancel_event)
+    def _start(self):
+        total = db.get_total_count(self.db_conn)
+        pending = db.get_pending_count(self.db_conn)
+        if total == 0:
+            self._start_scan(is_diff=False)
+        elif pending > 0:
+            self._start_scan(is_diff=True)
+        else:
+            self._on_all_done()
+
+    def _start_scan(self, is_diff=False):
+        self.phase = 'scan'
+        self.scanner = ScanWorker(self._cancel_event, is_diff=is_diff)
         self.scanner.progress.connect(self._on_scan_progress)
         self.scanner.finished.connect(self._on_scan_finished)
-
-        self.extractor = ExtractWorker(
-            self.path_queue, self.db_conn,
-            self._pause_event, self._cancel_event
-        )
-        self.extractor.file_done.connect(self._on_file_done)
-        self.extractor.all_done.connect(self._on_all_done)
-
-        # Start both
         self.scanner.start()
-        self.extractor.start()
-
-        # Timer to update stats from queue
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self._refresh_stats)
+        self._timer.timeout.connect(self._refresh)
         self._timer.start(500)
 
-    # ── Slots ──
-    def _on_scan_progress(self, dirs, pdfs, current):
-        self.files_found = pdfs
-        self.lbl_current.setText(f'Scanning: {current}')
+    def _start_extraction(self):
+        self.phase = 'extract'
+        self.btn_pause.setEnabled(True)
+        self.files_found = db.get_total_count(self.db_conn)
+        self.files_done = db.get_indexed_count(self.db_conn)
+        self.lbl_title.setText('FileFinder — Indexing...')
+        self.extractor = ExtractWorker(self._pause_event, self._cancel_event)
+        self.extractor.file_done.connect(self._on_file_done)
+        self.extractor.all_done.connect(self._on_all_done)
+        self.extractor.start()
+
+    def _start_watcher(self):
+        try:
+            roots = []
+            for letter in 'CDEFGH':
+                r = f'{letter}:\\'
+                if os.path.exists(r):
+                    roots.append(r)
+            self._watcher = Observer()
+            self._handler = PdfWatcher()
+            for r in roots:
+                self._watcher.schedule(self._handler, r, recursive=True)
+            self._watcher.start()
+        except Exception:
+            pass
+
+    def _on_scan_progress(self, count):
+        self.files_found = count
+        self.lbl_stats.setText(f'Found: {count:,}')
 
     def _on_scan_finished(self, total):
-        self.scan_done = True
-        self.lbl_current.setText(f'Scan complete. {total} files found. Indexing...')
+        self.files_found = total
+        self.lbl_current.setText(f'Scan complete. {total:,} files found.')
+        self._start_extraction()
 
-    def _on_file_done(self, path, has_text):
-        self.files_indexed += 1
-        if has_text:
-            self.lbl_current.setText(f'Indexed: {os.path.basename(path)}')
-        else:
+    def _on_file_done(self, filename, has_text):
+        self.files_done += 1
+        if not has_text:
             self.files_empty += 1
+        self.lbl_current.setText(filename)
 
     def _on_all_done(self):
-        self.extract_done = True
-        self._refresh_stats()
-        if not self._cancel_event.is_set():
-            self.lbl_current.setText('All files indexed!')
-            self.lbl_stats.setText(
-                f'Found: {self.files_found}  |  Indexed: {self.files_indexed}'
-                f'  |  Empty: {self.files_empty}'
-            )
-            self.btn_pause.setEnabled(False)
-            self.btn_cancel.setText('Close')
-            try:
-                self.btn_cancel.clicked.disconnect()
-            except Exception:
-                pass
-            self.btn_cancel.clicked.connect(self.close)
+        self.phase = 'done'
+        self.files_found = db.get_total_count(self.db_conn)
+        self.files_done = db.get_indexed_count(self.db_conn)
+        self._refresh()
+        self.lbl_title.setText('FileFinder — Done')
+        self.lbl_current.setText('All files indexed. Hiding to tray…')
+        self.btn_pause.setEnabled(False)
+        self.btn_cancel.setText('Close')
+        self._start_watcher()
+        # Auto-hide to tray after 3 seconds
+        QTimer.singleShot(3000, self._hide_to_tray)
 
-    def _refresh_stats(self):
-        pending = max(0, self.files_found - self.files_indexed)
-        self.lbl_stats.setText(
-            f'Found: {self.files_found}  |  Indexed: {self.files_indexed}  |  Pending: {pending}'
-        )
+    def _refresh(self):
+        pending = max(0, self.files_found - self.files_done)
+        if self.phase == 'scan':
+            self.lbl_stats.setText(f'Found: {self.files_found:,}')
+        else:
+            self.lbl_stats.setText(
+                f'Found: {self.files_found:,}  |  Done: {self.files_done:,}'
+                f'  |  Pending: {pending:,}'
+            )
         if self.files_found > 0:
             self.progress_bar.setRange(0, self.files_found)
-            self.progress_bar.setValue(self.files_indexed)
+            self.progress_bar.setValue(self.files_done)
         self.tray.setToolTip(
-            f'FileFinder\nFound: {self.files_found}\nIndexed: {self.files_indexed}\nPending: {pending}'
+            f'FileFinder\nFound: {self.files_found:,}'
+            f'\nDone: {self.files_done:,}\nPending: {pending:,}'
         )
 
-    # ── Button actions ──
     def _hide_to_tray(self):
         self.hide()
 
@@ -479,30 +362,40 @@ class IndexerWindow(QWidget):
             self.btn_pause.setText('Resume')
 
     def _cancel(self):
+        if self.phase == 'done':
+            self._shutdown()
+            return
         self._cancel_event.set()
-        self.scanner.wait(3000)
-        self.extractor.wait(3000)
-        self._timer.stop()
+        try:
+            self._watcher.stop()
+            self._watcher.join(timeout=2)
+        except Exception:
+            pass
+        if hasattr(self, '_hotkey_listener'):
+            self._hotkey_listener.stop()
+        if hasattr(self, '_timer'):
+            self._timer.stop()
+        self._shutdown()
+
+    def _shutdown(self):
         if self.db_conn:
             self.db_conn.close()
         self.tray.hide()
         QApplication.quit()
 
     def closeEvent(self, event):
-        if not self.extract_done:
-            # Still indexing — hide to tray instead of quitting
+        if self.phase != 'done':
             self._hide_to_tray()
             event.ignore()
         else:
             self._cancel()
 
 
-# ── Entry ──
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    window = IndexerWindow()
-    window.show()
+    w = IndexerWindow()
+    w.show()
     sys.exit(app.exec())
 
 
