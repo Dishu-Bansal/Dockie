@@ -69,6 +69,21 @@ class PdfWatcher(FileSystemEventHandler):
             return
         self._with_conn(lambda c: db.mark_extracted(c, event.src_path, None))
 
+    def on_moved(self, event):
+        if event.is_directory:
+            return
+        src = event.src_path
+        dst = event.dest_path
+        src_is_pdf = src.lower().endswith('.pdf')
+        dst_is_pdf = dst.lower().endswith('.pdf')
+
+        if src_is_pdf and dst_is_pdf:
+            self._with_conn(lambda c: db.move_file(c, src, dst))
+        elif src_is_pdf:
+            self._with_conn(lambda c: db.mark_deleted(c, src))
+        elif dst_is_pdf:
+            self._with_conn(lambda c: db.insert_scan_result(c, dst))
+
     def on_deleted(self, event):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
             return

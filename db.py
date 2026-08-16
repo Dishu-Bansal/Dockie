@@ -76,6 +76,24 @@ def mark_deleted(conn, path):
     conn.execute('DELETE FROM files WHERE path = ?', (path,))
 
 
+def move_file(conn, old_path, new_path):
+    """Rename/move a tracked file, preserving its extracted text and metadata."""
+    row = conn.execute(
+        'SELECT text, size, modified, scanned_at, indexed_at FROM files WHERE path = ?',
+        (old_path,),
+    ).fetchone()
+    if row is None:
+        insert_scan_result(conn, new_path)
+        return
+    conn.execute('DELETE FROM files WHERE path = ?', (old_path,))
+    conn.execute(
+        '''INSERT OR REPLACE INTO files
+           (path, filename, text, size, modified, scanned_at, indexed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        (new_path, os.path.basename(new_path), row[0], row[1], row[2], row[3], row[4]),
+    )
+
+
 def get_all_paths(conn):
     """Return set of all file paths in DB for diff-on-restart."""
     rows = conn.execute('SELECT path FROM files').fetchall()
