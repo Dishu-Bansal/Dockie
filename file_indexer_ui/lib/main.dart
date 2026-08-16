@@ -293,8 +293,52 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   }
 
   // ── Keyboard ──
+  static final Set<LogicalKeyboardKey> _dismissKeys = {
+    // Modifiers
+    LogicalKeyboardKey.alt,
+    LogicalKeyboardKey.altLeft,
+    LogicalKeyboardKey.altRight,
+    LogicalKeyboardKey.control,
+    LogicalKeyboardKey.controlLeft,
+    LogicalKeyboardKey.controlRight,
+    LogicalKeyboardKey.meta,
+    LogicalKeyboardKey.metaLeft,
+    LogicalKeyboardKey.metaRight,
+    // Function keys
+    LogicalKeyboardKey.f1,
+    LogicalKeyboardKey.f2,
+    LogicalKeyboardKey.f3,
+    LogicalKeyboardKey.f4,
+    LogicalKeyboardKey.f5,
+    LogicalKeyboardKey.f6,
+    LogicalKeyboardKey.f7,
+    LogicalKeyboardKey.f8,
+    LogicalKeyboardKey.f9,
+    LogicalKeyboardKey.f10,
+    LogicalKeyboardKey.f11,
+    LogicalKeyboardKey.f12,
+    // Navigation / editing keys
+    LogicalKeyboardKey.pageUp,
+    LogicalKeyboardKey.pageDown,
+    LogicalKeyboardKey.home,
+    LogicalKeyboardKey.end,
+    LogicalKeyboardKey.insert,
+    LogicalKeyboardKey.delete,
+    LogicalKeyboardKey.printScreen,
+    LogicalKeyboardKey.scrollLock,
+    LogicalKeyboardKey.pause,
+  };
+
+  static bool _isDismissKey(LogicalKeyboardKey key) =>
+      _dismissKeys.contains(key);
+
   KeyEventResult _handleTextFieldKey(FocusNode node, KeyEvent evt) {
     if (evt is! KeyDownEvent) return KeyEventResult.ignored;
+
+    if (_isDismissKey(evt.logicalKey)) {
+      _closeApp();
+      return KeyEventResult.handled;
+    }
 
     if (evt.logicalKey == LogicalKeyboardKey.escape) {
       _closeApp();
@@ -333,20 +377,19 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   void _scrollToSelected() {
     if (!_scrollController.hasClients) return;
-    const itemHeight = 78.0;
+    const itemHeight = 85.0;
     final offset = _selectedIndex * itemHeight;
     final viewport = _scrollController.position.viewportDimension;
     if (offset < _scrollController.offset) {
-      _scrollController.animateTo(offset,
-          duration: const Duration(milliseconds: 100), curve: Curves.easeOut);
+      _scrollController.jumpTo(offset);
     } else if (offset + itemHeight > _scrollController.offset + viewport) {
-      _scrollController.animateTo(offset + itemHeight - viewport,
-          duration: const Duration(milliseconds: 100), curve: Curves.easeOut);
+      _scrollController.jumpTo(offset + itemHeight - viewport);
     }
   }
 
   void _onOverlayKey(KeyEvent event) {
-    if (event is KeyDownEvent &&
+    if (event is! KeyDownEvent) return;
+    if (_isDismissKey(event.logicalKey) ||
         event.logicalKey == LogicalKeyboardKey.escape) {
       _closeApp();
     }
@@ -440,7 +483,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                       child: Container(
                         width: MediaQuery.sizeOf(context).width * 0.35,
                         height: 50,
-                        padding: EdgeInsets.only(left: 10, right: 10, top: 10, bottom: 5),
+                        padding: EdgeInsets.only(left: 10, right: 10, top: 0, bottom: 5),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.95),
                           borderRadius: BorderRadius.circular(7),
@@ -464,78 +507,90 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                             border: InputBorder.none,
                             isDense: true,
                             isCollapsed: true,
-                            icon: Icon(Icons.search, size: 20, color: Colors.black),
+                            icon: Container(padding: EdgeInsets.fromLTRB(0, 12, 0, 0),child: Icon(Icons.search, size: 20, color: Colors.black)),
                           ),
                         ),
                       ),
                     ),
                   ),
-                  Container(
-                    width: MediaQuery.sizeOf(context).width * 0.35,
-                    height: 300,
-                    color: Colors.black38,
-                    child: ListView.builder(
-                      controller: _scrollController,
-                      itemCount: _results.length,
-                      itemExtent: 78,
-                      itemBuilder: (context, index) {
-                        final result = _results[index];
-                        final query = _searchController.text.trim();
+                  if (_results.isNotEmpty)
+                    Container(
+                      width: MediaQuery.sizeOf(context).width * 0.35,
+                      constraints: const BoxConstraints(maxHeight: 300),
+                      color: Colors.white,
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        itemCount: _results.length,
+                        itemExtent: 85,
+                        shrinkWrap: true,
+                        itemBuilder: (context, index) {
+                          final result = _results[index];
+                          final query = _searchController.text.trim();
 
-                        final snippet = result.rank <= 3
-                            ? _makeSnippet(result.fullText, query)
-                            : '';
-                        return GestureDetector(
-                          onTap: () => _activateResult(index),
-                          child: Container(
-                            color: index == _selectedIndex
-                                ? Colors.blue.withOpacity(0.10)
-                                : Colors.black12,
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                // Filename
-                                RichText(
-                                  text: TextSpan(
-                                    style: const TextStyle(
-                                        fontSize: 13,
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w600),
-                                    children: _highlightText(result.filename, query),
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                if (snippet.isNotEmpty) ...[
-                                  const SizedBox(height: 3),
-                                  RichText(
-                                    text: TextSpan(
-                                      style: const TextStyle(
-                                          fontSize: 12, color: Colors.white70),
-                                      children: _highlightText(snippet, query),
+                          final snippet = result.rank <= 3
+                              ? _makeSnippet(result.fullText, query)
+                              : '';
+                          return GestureDetector(
+                            onTap: () => _activateResult(index),
+                            child: Container(
+                              color: index == _selectedIndex
+                                  ? Colors.grey.shade300
+                                  : Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.picture_as_pdf,
+                                      size: 28, color: Colors.red),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        // Filename
+                                        RichText(
+                                          text: TextSpan(
+                                            style: const TextStyle(
+                                                fontSize: 16,
+                                                color: Colors.black87,
+                                                fontWeight: FontWeight.w600),
+                                            children: _highlightText(result.filename, query),
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        if (snippet.isNotEmpty) ...[
+                                          const SizedBox(height: 3),
+                                          RichText(
+                                            text: TextSpan(
+                                              style: const TextStyle(
+                                                  fontSize: 13, color: Colors.black54),
+                                              children: _highlightText(snippet, query),
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                        const SizedBox(height: 3),
+                                        // File path
+                                        Text(
+                                          result.path,
+                                          style: const TextStyle(
+                                              fontSize: 13, color: Colors.black54),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
                                     ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ],
-                                const SizedBox(height: 3),
-                                // File path
-                                Text(
-                                  result.path,
-                                  style: const TextStyle(
-                                      fontSize: 10, color: Colors.white70),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
+                              ),
                             ),
-                          ),
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
-                  ),
                   // _showResults ? GestureDetector(
                   //   onTap: () => {},//_activateResult(index),
                   //   child: Container(
