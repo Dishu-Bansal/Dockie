@@ -198,7 +198,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   }
 
   void _performSearch(String query) {
-    if (!_dbReady || _db == null) {
+    if (!_dbReady) {
       setState(() => _showResults = true);
       return;
     }
@@ -206,9 +206,12 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     final likePrefix = '$query%';
     final likeContains = '%$query%';
 
-    final rows;
+    final results = <_SearchResult>[];
+    // Use a fresh connection per search so we always read the latest committed
+    // rows (the watcher/worker write to the DB from another process).
+    final db = sqlite3.open(_dbPath);
     try {
-      rows = _db!.select(
+      final rows = db.select(
         '''SELECT path, filename, COALESCE(text, '') AS text,
                   CASE
                       WHEN filename LIKE ? THEN 1
@@ -222,20 +225,20 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
            ORDER BY rank, filename
            LIMIT 50''',
         [likePrefix, likeContains, likeContains, likeContains, likeContains],
-      ).toList();
-    } catch (_) {
-      setState(() => _showResults = true);
-      return;
-    }
+      );
 
-    final results = <_SearchResult>[];
-    for (final row in rows) {
-      results.add(_SearchResult(
-        row['path'] as String,
-        row['filename'] as String,
-        row['text'] as String,
-        row['rank'] as int,
-      ));
+      for (final row in rows) {
+        results.add(_SearchResult(
+          row['path'] as String,
+          row['filename'] as String,
+          row['text'] as String,
+          row['rank'] as int,
+        ));
+      }
+    } catch (_) {
+      // Leave results empty rather than showing stale rows.
+    } finally {
+      db.dispose();
     }
 
     setState(() {
