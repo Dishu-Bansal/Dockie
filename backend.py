@@ -50,6 +50,7 @@ class State:
         self.cancel = threading.Event()
         self.pause = threading.Event()
         self.shutdown_flag = threading.Event()
+        self.extract_wake = threading.Event()
         self.lock = threading.Lock()
 
 
@@ -63,11 +64,30 @@ class PdfWatcher(FileSystemEventHandler):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
             return
         self._with_conn(lambda c: db.insert_scan_result(c, event.src_path))
+        _state.extract_wake.set()
 
     def on_modified(self, event):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
             return
-        self._with_conn(lambda c: db.mark_extracted(c, event.src_path, None))
+        self._with_conn(lambda c: db.mark_pending(c, event.src_path))
+        _state.extract_wake.set()
+
+    def on_moved(self, event):
+        if event.is_directory:
+            return
+        src = event.src_path
+        dst = event.dest_path
+        src_is_pdf = src.lower().endswith('.pdf')
+        dst_is_pdf = dst.lower().endswith('.pdf')
+
+        if src_is_pdf and dst_is_pdf:
+            self._with_conn(lambda c: db.move_file(c, src, dst))
+            _state.extract_wake.set()
+        elif src_is_pdf:
+            self._with_conn(lambda c: db.mark_deleted(c, src))
+        elif dst_is_pdf:
+            self._with_conn(lambda c: db.insert_scan_result(c, dst))
+            _state.extract_wake.set()
 
     def on_deleted(self, event):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
@@ -113,8 +133,83 @@ def run_scan():
         conn.close()
 
 
+def diff_scan():
+    """Reconcile the DB with disk for changes made while the app was shutdown."""
+    print('[backend] Diff scan started...')
+    conn = db.get_conn()
+    try:
+        db_meta = {
+            path: (size, modified)
+            for path, size, modified in conn.execute('SELECT path, size, modified FROM files')
+        }
+        available_roots = set(get_available_roots())
+
+        disk_paths = set()
+        new_count = 0
+        modified_count = 0
+        pending_changes = 0
+        last_commit = time.time()
+
+        for path in find_pdfs(_state.cancel):
+            if _state.cancel.is_set():
+                conn.commit()
+                print('[backend] Diff scan cancelled')
+                return
+
+            # Keep write transactions short so the extractor is never blocked
+            # for long; flush any stale pending writes before proceeding.
+            if pending_changes and time.time() - last_commit >= 1.0:
+                conn.commit()
+                _state.extract_wake.set()
+                pending_changes = 0
+                last_commit = time.time()
+
+            disk_paths.add(path)
+            meta = db_meta.get(path)
+            if meta is None:
+                db.insert_scan_result(conn, path)
+                new_count += 1
+                pending_changes += 1
+            else:
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                if st.st_size != meta[0] or st.st_mtime != meta[1]:
+                    db.mark_pending(conn, path, st.st_size, st.st_mtime)
+                    modified_count += 1
+                    pending_changes += 1
+
+            if pending_changes >= 200:
+                conn.commit()
+                _state.extract_wake.set()
+                pending_changes = 0
+                last_commit = time.time()
+
+        conn.commit()
+
+        deleted_count = 0
+        for path in db_meta:
+            if path in disk_paths:
+                continue
+            drive = os.path.splitdrive(path)[0]
+            if drive and (drive + '\\') not in available_roots:
+                continue
+            db.mark_deleted(conn, path)
+            deleted_count += 1
+            if deleted_count % 200 == 0:
+                conn.commit()
+
+        conn.commit()
+        _state.extract_wake.set()
+        print(f'[backend] Diff scan complete: {new_count} new, '
+              f'{modified_count} modified, {deleted_count} deleted')
+    finally:
+        conn.close()
+
+
 def run_extract():
-    print('[backend] Extraction started...')
+    print('[backend] Extraction worker started...')
     conn = db.get_conn()
     try:
         while not _state.cancel.is_set():
@@ -123,9 +218,18 @@ def run_extract():
                 continue
             rows = db.get_pending_batch(conn, limit=1)
             if not rows:
-                time.sleep(1)
+                total = db.get_total_count(conn)
+                indexed = db.get_indexed_count(conn)
+                with _state.lock:
+                    _state.files_found = total
+                    _state.files_done = indexed
+                    _state.phase = 'done'
+                # Flush WAL into the main .db file so external readers see the
+                # latest state without waiting for a restart.
+                conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()
+                _state.extract_wake.clear()
                 if db.get_pending_count(conn) == 0:
-                    break
+                    _state.extract_wake.wait(timeout=1.0)
                 continue
             path, filename = rows[0]
             with _state.lock:
@@ -144,7 +248,7 @@ def run_extract():
                 print(f'[backend] Extract progress: {_state.files_done:,}/{_state.files_found:,}')
     finally:
         conn.close()
-    print(f'[backend] Extraction complete: {_state.files_done:,} indexed '
+    print(f'[backend] Extraction worker stopped: {_state.files_done:,} indexed '
           f'({_state.files_empty:,} empty)')
 
 
@@ -165,26 +269,30 @@ def pipeline():
         run_scan()
         if _state.cancel.is_set():
             return
-        _state.phase = 'extract'
-        with _state.lock:
-            _state.files_found = db.get_total_count(db.get_conn())
-            _state.files_done = db.get_indexed_count(db.get_conn())
-        print('[backend] Phase → extract')
-        run_extract()
-    elif pending > 0:
-        _state.phase = 'extract'
+        c = db.get_conn()
+        try:
+            with _state.lock:
+                _state.files_found = db.get_total_count(c)
+                _state.files_done = db.get_indexed_count(c)
+        finally:
+            c.close()
+    else:
         with _state.lock:
             _state.files_found = total
             _state.files_done = total - pending
-        print(f'[backend] Phase → extract (resuming: {pending} pending)')
-        run_extract()
-    else:
-        _state.phase = 'done'
-        print('[backend] Phase → done (all indexed)')
+        if pending > 0:
+            print(f'[backend] Resuming: {pending} pending files to index')
 
-    if not _state.cancel.is_set():
-        _state.phase = 'done'
-        print('[backend] Pipeline finished')
+    # Start the persistent extractor — it drains the initial backlog now and
+    # keeps running to index new/requeued files the watcher adds later.
+    _state.phase = 'extract'
+    print('[backend] Phase → extract (persistent worker)')
+    threading.Thread(target=run_extract, daemon=True).start()
+
+    # Reconcile with disk in the background for changes made while shutdown.
+    if total > 0:
+        print('[backend] Starting background diff scan...')
+        threading.Thread(target=diff_scan, daemon=True).start()
 
 
 def start_watcher():
