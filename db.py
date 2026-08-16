@@ -76,6 +76,24 @@ def mark_deleted(conn, path):
     conn.execute('DELETE FROM files WHERE path = ?', (path,))
 
 
+def mark_pending(conn, path, size=None, modified=None):
+    """Mark a file as needing (re)extraction, refreshing its size/mtime.
+
+    When size/modified are omitted they are read from disk; pass them to avoid
+    a redundant os.stat when the caller already has fresh values."""
+    if size is None or modified is None:
+        try:
+            st = os.stat(path)
+            size = st.st_size
+            modified = st.st_mtime
+        except OSError:
+            return
+    conn.execute(
+        'UPDATE files SET text = NULL, size = ?, modified = ?, scanned_at = ? WHERE path = ?',
+        (size, modified, time.time(), path),
+    )
+
+
 def move_file(conn, old_path, new_path):
     """Rename/move a tracked file, preserving its extracted text and metadata."""
     row = conn.execute(

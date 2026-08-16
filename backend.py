@@ -69,7 +69,7 @@ class PdfWatcher(FileSystemEventHandler):
     def on_modified(self, event):
         if event.is_directory or not event.src_path.lower().endswith('.pdf'):
             return
-        self._with_conn(lambda c: db.mark_extracted(c, event.src_path, None))
+        self._with_conn(lambda c: db.mark_pending(c, event.src_path))
         _state.extract_wake.set()
 
     def on_moved(self, event):
@@ -129,6 +129,81 @@ def run_scan():
         with _state.lock:
             _state.files_found = count
         print(f'[backend] Scan complete: {count:,} total files found')
+    finally:
+        conn.close()
+
+
+def diff_scan():
+    """Reconcile the DB with disk for changes made while the app was shutdown."""
+    print('[backend] Diff scan started...')
+    conn = db.get_conn()
+    try:
+        db_meta = {
+            path: (size, modified)
+            for path, size, modified in conn.execute('SELECT path, size, modified FROM files')
+        }
+        available_roots = set(get_available_roots())
+
+        disk_paths = set()
+        new_count = 0
+        modified_count = 0
+        pending_changes = 0
+        last_commit = time.time()
+
+        for path in find_pdfs(_state.cancel):
+            if _state.cancel.is_set():
+                conn.commit()
+                print('[backend] Diff scan cancelled')
+                return
+
+            # Keep write transactions short so the extractor is never blocked
+            # for long; flush any stale pending writes before proceeding.
+            if pending_changes and time.time() - last_commit >= 1.0:
+                conn.commit()
+                _state.extract_wake.set()
+                pending_changes = 0
+                last_commit = time.time()
+
+            disk_paths.add(path)
+            meta = db_meta.get(path)
+            if meta is None:
+                db.insert_scan_result(conn, path)
+                new_count += 1
+                pending_changes += 1
+            else:
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                if st.st_size != meta[0] or st.st_mtime != meta[1]:
+                    db.mark_pending(conn, path, st.st_size, st.st_mtime)
+                    modified_count += 1
+                    pending_changes += 1
+
+            if pending_changes >= 200:
+                conn.commit()
+                _state.extract_wake.set()
+                pending_changes = 0
+                last_commit = time.time()
+
+        conn.commit()
+
+        deleted_count = 0
+        for path in db_meta:
+            if path in disk_paths:
+                continue
+            drive = os.path.splitdrive(path)[0]
+            if drive and (drive + '\\') not in available_roots:
+                continue
+            db.mark_deleted(conn, path)
+            deleted_count += 1
+            if deleted_count % 200 == 0:
+                conn.commit()
+
+        conn.commit()
+        _state.extract_wake.set()
+        print(f'[backend] Diff scan complete: {new_count} new, '
+              f'{modified_count} modified, {deleted_count} deleted')
     finally:
         conn.close()
 
@@ -213,6 +288,11 @@ def pipeline():
     _state.phase = 'extract'
     print('[backend] Phase → extract (persistent worker)')
     threading.Thread(target=run_extract, daemon=True).start()
+
+    # Reconcile with disk in the background for changes made while shutdown.
+    if total > 0:
+        print('[backend] Starting background diff scan...')
+        threading.Thread(target=diff_scan, daemon=True).start()
 
 
 def start_watcher():
