@@ -11,7 +11,7 @@
 //   final profile = Platform.environment['USERPROFILE'] ??
 //       Platform.environment['HOME'] ??
 //       '.';
-//   return '$profile\\.filefinder\\index.db';
+//   return '$profile\\.dockie\\index.db';
 // }
 
 // // ── Entry point ──
@@ -41,7 +41,7 @@
 //   @override
 //   Widget build(BuildContext context) {
 //     return MaterialApp(
-//       title: 'FileFinder',
+//       title: 'Dockie',
 //       debugShowCheckedModeBanner: false,
 //       home: const SearchOverlay(),
 //     );

@@ -1,4 +1,4 @@
-# file_indexer_ui
+# dockie_ui
 
 A new Flutter project.
 

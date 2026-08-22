@@ -1,5 +1,5 @@
-﻿name: file_indexer_ui
-description: "FileFinder ΓÇö PDF indexing & search"
+﻿name: dockie_ui
+description: "Dockie ΓÇö PDF indexing & search"
 publish_to: 'none'
 version: 1.0.0+1
 environment:

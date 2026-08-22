@@ -32,7 +32,7 @@ String get _dbPath {
   final profile = Platform.environment['USERPROFILE'] ??
       Platform.environment['HOME'] ??
       '.';
-  return '$profile\\.filefinder\\index.db';
+  return '$profile\\.dockie\\index.db';
 }
 
 class _SearchResult {
@@ -89,6 +89,9 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   Timer? _debounce;
   bool _showResults = false;
   final ScrollController _scrollController = ScrollController();
+  // Per-row keys so keyboard navigation can scroll the selected row into view
+  // even though rows now have intrinsic (variable) heights.
+  final Map<int, GlobalKey> _itemKeys = {};
 
   @override
   void initState() {
@@ -180,6 +183,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
       _results = [];
       _selectedIndex = 0;
       _showResults = false;
+      _itemKeys.clear();
     });
   }
 
@@ -245,6 +249,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
       _results = results;
       _selectedIndex = results.isNotEmpty ? 0 : -1;
       _showResults = true;
+      _itemKeys.clear();
     });
 
     if (_scrollController.hasClients) {
@@ -380,13 +385,13 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   void _scrollToSelected() {
     if (!_scrollController.hasClients) return;
-    const itemHeight = 85.0;
-    final offset = _selectedIndex * itemHeight;
-    final viewport = _scrollController.position.viewportDimension;
-    if (offset < _scrollController.offset) {
-      _scrollController.jumpTo(offset);
-    } else if (offset + itemHeight > _scrollController.offset + viewport) {
-      _scrollController.jumpTo(offset + itemHeight - viewport);
+    final context = _itemKeys[_selectedIndex]?.currentContext;
+    if (context != null) {
+      Scrollable.ensureVisible(
+        context,
+        alignment: 0.5,
+        duration: Duration.zero,
+      );
     }
   }
 
@@ -478,15 +483,13 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
               color: Colors.black12,
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
-                // mainAxisSize: MainAxisSize.min,
                 children: [
                   Center(
+                    // Prevent taps inside the panel from closing the search bar.
                     child: GestureDetector(
-                      onTap: () {}, // Prevent tap events from closing the search bar.
+                      onTap: () {},
                       child: Container(
                         width: MediaQuery.sizeOf(context).width * 0.35,
-                        height: 50,
-                        padding: EdgeInsets.only(left: 10, right: 10, top: 0, bottom: 5),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.95),
                           borderRadius: BorderRadius.circular(7),
@@ -498,102 +501,166 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                             ),
                           ],
                         ),
-                        child: TextField(
-                          controller: _searchController,
-                          focusNode: _textFocusNode,
-                          textAlignVertical: TextAlignVertical.center,
-                          autofocus: true,
-                          decoration: InputDecoration(
-                            hintText: 'What file are you looking for?',
-                            helperText: 'Press ENTER to open file or SHIFT + ENTER to open file location',
-                            helperStyle: TextStyle(fontSize: 9),
-                            border: InputBorder.none,
-                            isDense: true,
-                            isCollapsed: true,
-                            icon: Container(padding: EdgeInsets.fromLTRB(0, 12, 0, 0),child: Icon(Icons.search, size: 20, color: Colors.black)),
-                          ),
+                        clipBehavior: Clip.antiAlias,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // ── Search bar: full-width row, input left, icon right ──
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 12),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _searchController,
+                                      focusNode: _textFocusNode,
+                                      autofocus: true,
+                                      style: const TextStyle(
+                                          fontSize: 15, color: Colors.black87),
+                                      decoration: const InputDecoration(
+                                        hintText:
+                                            'What file are you looking for?',
+                                        border: InputBorder.none,
+                                        isDense: true,
+                                        isCollapsed: true,
+                                        contentPadding: EdgeInsets.zero,
+                                      ),
+                                    ),
+                                  ),
+                                  const Icon(Icons.search,
+                                      size: 20, color: Colors.black),
+                                ],
+                              ),
+                            ),
+                            if (_results.isNotEmpty) ...[
+                              // Thin divider between search bar and results.
+                              const Divider(height: 1, thickness: 1),
+                              // ── Scrollable results list ──
+                              ConstrainedBox(
+                                constraints:
+                                    const BoxConstraints(maxHeight: 300),
+                                child: Scrollbar(
+                                  controller: _scrollController,
+                                  thumbVisibility: true,
+                                  thickness: 4,
+                                  radius: const Radius.circular(2),
+                                  child: ListView.builder(
+                                    controller: _scrollController,
+                                    itemCount: _results.length,
+                                    shrinkWrap: true,
+                                    padding: EdgeInsets.zero,
+                                    itemBuilder: (context, index) {
+                                      final result = _results[index];
+                                      final query =
+                                          _searchController.text.trim();
+
+                                      final snippet = result.rank <= 3
+                                          ? _makeSnippet(
+                                              result.fullText, query)
+                                          : '';
+
+                                      final itemKey = _itemKeys.putIfAbsent(
+                                          index, () => GlobalKey());
+
+                                      return GestureDetector(
+                                        key: itemKey,
+                                        onTap: () => _activateResult(index),
+                                        child: Container(
+                                          // Full-bleed highlight for the
+                                          // selected row.
+                                          color: index == _selectedIndex
+                                              ? Colors.grey.shade300
+                                              : Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 12, vertical: 12),
+                                          child: Row(
+                                            // Icon top-aligned: rows span
+                                            // multiple lines of text.
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              const Icon(
+                                                  Icons.picture_as_pdf,
+                                                  size: 28,
+                                                  color: Colors.red),
+                                              const SizedBox(width: 12),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    // Filename (primary line)
+                                                    RichText(
+                                                      text: TextSpan(
+                                                        style:
+                                                            const TextStyle(
+                                                                fontSize: 16,
+                                                                color: Colors
+                                                                    .black87,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600),
+                                                        children:
+                                                            _highlightText(
+                                                                result.filename,
+                                                                query),
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                    const SizedBox(height: 3),
+                                                    // File location (secondary)
+                                                    Text(
+                                                      result.path,
+                                                      style: const TextStyle(
+                                                          fontSize: 13,
+                                                          color: Colors
+                                                              .black54),
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                    if (snippet.isNotEmpty) ...[
+                                                      const SizedBox(height: 3),
+                                                      // Content snippet
+                                                      // (1-2 lines, capped)
+                                                      RichText(
+                                                        text: TextSpan(
+                                                          style:
+                                                              const TextStyle(
+                                                                  fontSize: 13,
+                                                                  color: Colors
+                                                                      .black54,
+                                                                  height: 1.3),
+                                                          children:
+                                                              _highlightText(
+                                                                  snippet,
+                                                                  query),
+                                                        ),
+                                                        maxLines: 2,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                      ),
+                                                    ],
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
                     ),
                   ),
-                  if (_results.isNotEmpty)
-                    Container(
-                      width: MediaQuery.sizeOf(context).width * 0.35,
-                      constraints: const BoxConstraints(maxHeight: 300),
-                      color: Colors.white,
-                      child: ListView.builder(
-                        controller: _scrollController,
-                        itemCount: _results.length,
-                        itemExtent: 85,
-                        shrinkWrap: true,
-                        itemBuilder: (context, index) {
-                          final result = _results[index];
-                          final query = _searchController.text.trim();
-
-                          final snippet = result.rank <= 3
-                              ? _makeSnippet(result.fullText, query)
-                              : '';
-                          return GestureDetector(
-                            onTap: () => _activateResult(index),
-                            child: Container(
-                              color: index == _selectedIndex
-                                  ? Colors.grey.shade300
-                                  : Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.picture_as_pdf,
-                                      size: 28, color: Colors.red),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        // Filename
-                                        RichText(
-                                          text: TextSpan(
-                                            style: const TextStyle(
-                                                fontSize: 16,
-                                                color: Colors.black87,
-                                                fontWeight: FontWeight.w600),
-                                            children: _highlightText(result.filename, query),
-                                          ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        if (snippet.isNotEmpty) ...[
-                                          const SizedBox(height: 3),
-                                          RichText(
-                                            text: TextSpan(
-                                              style: const TextStyle(
-                                                  fontSize: 13, color: Colors.black54),
-                                              children: _highlightText(snippet, query),
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
-                                        const SizedBox(height: 3),
-                                        // File path
-                                        Text(
-                                          result.path,
-                                          style: const TextStyle(
-                                              fontSize: 13, color: Colors.black54),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
                   // _showResults ? GestureDetector(
                   //   onTap: () => {},//_activateResult(index),
                   //   child: Container(

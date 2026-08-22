@@ -1,13 +1,15 @@
 """
-FileFinder backend — scanning, extraction, file watching, hotkey, system tray,
+Dockie backend — scanning, extraction, file watching, hotkey, system tray,
 and PyQt indexing-status window. Launches the Flutter UI on triple-F.
 """
 
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import winreg
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -33,10 +35,28 @@ try:
 except ImportError:
     pass
 
-CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.filefinder')
-FLUTTER_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'file_indexer_ui', 'build', 'windows', 'x64',
-                           'runner', 'Release', 'file_indexer_ui.exe')
+CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.dockie')
+SETTINGS_PATH = os.path.join(CONFIG_DIR, 'settings.json')
+
+if getattr(sys, 'frozen', False):
+    # Installed layout: Inno Setup installs dockie_ui.exe next to Dockie.exe.
+    FLUTTER_EXE = os.path.join(os.path.dirname(sys.executable), 'dockie_ui.exe')
+else:
+    # Source layout (dev): dockie_ui\build\windows\x64\runner\Release\dockie_ui.exe
+    FLUTTER_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'dockie_ui', 'build', 'windows', 'x64',
+                               'runner', 'Release', 'dockie_ui.exe')
+
+# When launched without a console (pythonw.exe, e.g. at login), redirect prints
+# to a log file so logging does not fail on a missing stdout/stderr.
+if sys.stdout is None or sys.stderr is None:
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    _log = open(os.path.join(CONFIG_DIR, 'dockie.log'), 'a', buffering=1,
+                encoding='utf-8', errors='replace')
+    if sys.stdout is None:
+        sys.stdout = _log
+    if sys.stderr is None:
+        sys.stderr = _log
 
 
 # ── Application state ──
@@ -265,7 +285,7 @@ def pipeline():
 
     if total == 0:
         _state.phase = 'scan'
-        print('[backend] Phase → scan (fresh start)')
+        print('[backend] Phase -> scan (fresh start)')
         run_scan()
         if _state.cancel.is_set():
             return
@@ -286,7 +306,7 @@ def pipeline():
     # Start the persistent extractor — it drains the initial backlog now and
     # keeps running to index new/requeued files the watcher adds later.
     _state.phase = 'extract'
-    print('[backend] Phase → extract (persistent worker)')
+    print('[backend] Phase -> extract (persistent worker)')
     threading.Thread(target=run_extract, daemon=True).start()
 
     # Reconcile with disk in the background for changes made while shutdown.
@@ -377,9 +397,90 @@ def launch_flutter():
         return None
 
 
+# ── Startup registration ──
+STARTUP_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+STARTUP_NAME = 'Dockie'
+
+
+def _startup_command():
+    # Packaged (PyInstaller) builds run as a single exe — register that exe.
+    if getattr(sys, 'frozen', False):
+        return f'"{os.path.abspath(sys.executable)}"'
+    # Running from source — register pythonw.exe + this script.
+    pythonw = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe')
+    if not os.path.exists(pythonw):
+        pythonw = sys.executable
+    script = os.path.abspath(__file__)
+    return f'"{pythonw}" "{script}"'
+
+
+def _load_settings():
+    try:
+        with open(SETTINGS_PATH, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _save_settings(settings):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(SETTINGS_PATH, 'w') as f:
+        json.dump(settings, f)
+
+
+def get_run_on_startup():
+    return bool(_load_settings().get('run_on_startup', True))
+
+
+def set_run_on_startup(enabled):
+    settings = _load_settings()
+    settings['run_on_startup'] = bool(enabled)
+    _save_settings(settings)
+
+
+def enable_run_on_startup():
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY) as key:
+            winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, _startup_command())
+    except OSError as e:
+        print(f'[backend] Failed to register startup: {e}')
+
+
+def disable_run_on_startup():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, STARTUP_NAME)
+    except FileNotFoundError:
+        pass  # already not registered
+    except OSError as e:
+        print(f'[backend] Failed to unregister startup: {e}')
+
+
+def sync_run_on_startup():
+    """Apply the persisted preference (default: auto-register at startup)."""
+    if get_run_on_startup():
+        enable_run_on_startup()
+
+
+def _migrate_config():
+    """Move data from the old .filefinder dir into .dockie on first run."""
+    old_dir = os.path.join(os.path.expanduser('~'), '.filefinder')
+    if not os.path.isdir(old_dir) or old_dir == CONFIG_DIR:
+        return
+    if os.path.exists(os.path.join(CONFIG_DIR, 'index.db')):
+        return  # already migrated or fresh install
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    for name in ('index.db', 'index.db-wal', 'index.db-shm', 'settings.json'):
+        src = os.path.join(old_dir, name)
+        dst = os.path.join(CONFIG_DIR, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            os.replace(src, dst)
+            print(f'[backend] Migrated {name} -> {CONFIG_DIR}')
+
+
 # ── System tray ──
 _tray_icon = None  # global reference keeps the icon alive while running
-_bridge = None  # Qt signal bridge for tray → window (set once in main())
+_bridge = None  # Qt signal bridge for tray -> window (set once in main())
 
 
 def _make_tray_icon():
@@ -410,14 +511,31 @@ def _tray_exit(icon, item):
     icon.stop()
 
 
+def _toggle_run_on_startup(icon, item):
+    enabled = not get_run_on_startup()
+    set_run_on_startup(enabled)
+    if enabled:
+        enable_run_on_startup()
+        print('[backend] Run on startup: enabled')
+    else:
+        disable_run_on_startup()
+        print('[backend] Run on startup: disabled')
+
+
 def _run_tray():
     global _tray_icon
     _tray_icon = pystray.Icon(
-        'filefinder',
+        'dockie',
         _make_tray_icon(),
-        'FileFinder',
+        'Dockie',
         menu=pystray.Menu(
             pystray.MenuItem('Show', _tray_show, default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                'Run on startup',
+                _toggle_run_on_startup,
+                checked=lambda item: get_run_on_startup(),
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Exit', _tray_exit),
         ),
@@ -441,7 +559,7 @@ class IndexingWindow(QWidget):
         self._refresh()
 
     def _init_ui(self):
-        self.setWindowTitle('FileFinder')
+        self.setWindowTitle('Dockie')
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
@@ -466,7 +584,7 @@ class IndexingWindow(QWidget):
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(8)
 
-        self.lbl_title = QLabel('FileFinder — Indexing…')
+        self.lbl_title = QLabel('Dockie — Indexing…')
         self.lbl_title.setFont(QFont('Segoe UI', 13, QFont.Weight.Bold))
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_title)
@@ -520,19 +638,19 @@ class IndexingWindow(QWidget):
         cancelled = _state.cancel.is_set() and phase != 'done'
 
         if cancelled:
-            title = 'FileFinder — Cancelled'
+            title = 'Dockie — Cancelled'
             in_progress = False
         elif phase == 'done':
-            title = 'FileFinder — Done'
+            title = 'Dockie — Done'
             in_progress = False
         elif phase == 'scan':
-            title = 'FileFinder — Scanning…'
+            title = 'Dockie — Scanning…'
             in_progress = True
         elif phase == 'extract':
-            title = 'FileFinder — Indexing…'
+            title = 'Dockie — Indexing…'
             in_progress = True
         else:
-            title = 'FileFinder — Starting…'
+            title = 'Dockie — Starting…'
             in_progress = True
 
         self.lbl_title.setText(title)
@@ -579,11 +697,13 @@ class IndexingWindow(QWidget):
 # ── Main ──
 def main():
     global _bridge
+    _migrate_config()
     print('[backend] ========================================')
-    print('[backend] FileFinder backend starting...')
+    print('[backend] Dockie backend starting...')
     print(f'[backend] Config dir: {CONFIG_DIR}')
     print(f'[backend] DB path: {db.DB_PATH}')
     os.makedirs(CONFIG_DIR, exist_ok=True)
+    sync_run_on_startup()
 
     # Qt application (created first; its event loop runs on the main thread).
     app = QApplication(sys.argv)
