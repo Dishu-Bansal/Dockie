@@ -627,6 +627,8 @@ def _run_tray():
                     checked=lambda item: get_run_on_startup(),
                 ),
                 pystray.Menu.SEPARATOR,
+                # Informational only: a None action renders the item disabled.
+                pystray.MenuItem(f'Version {Updater.VERSION}', None),
                 pystray.MenuItem('Exit', _tray_exit),
             ),
         )
