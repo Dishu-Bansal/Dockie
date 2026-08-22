@@ -9,7 +9,12 @@ import 'dart:math';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await windowManager.ensureInitialized();
+  _log('Flutter UI starting, dbPath=$_dbPath');
+  try {
+    await windowManager.ensureInitialized();
+  } catch (e) {
+    _log('windowManager.ensureInitialized failed: $e', level: 'ERROR');
+  }
 
   // Configure window options: a borderless, transparent, full-screen window.
   WindowOptions windowOptions = WindowOptions(
@@ -19,16 +24,46 @@ void main() async {
     titleBarStyle: TitleBarStyle.hidden,
   );
 
-  windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.setAlwaysOnTop(true);
-    await windowManager.show();
-  });
+  try {
+    windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.setAlwaysOnTop(true);
+      await windowManager.show();
+      _log('Window shown (always-on-top)');
+    });
+  } catch (e) {
+    _log('waitUntilReadyToShow failed: $e', level: 'ERROR');
+  }
 
   runApp(SpotlightApp());
 }
 
+// ── Logging ──
+// The Python backend launches this process with stdout piped into
+// dockie.log (prefixed "flutter:"), so every print() here lands in the
+// same log as the backend's own entries. Timestamps keep the two aligned.
+String _two(int n) => n.toString().padLeft(2, '0');
+
+void _log(String message, {String level = 'INFO'}) {
+  final t = DateTime.now();
+  // ignore: avoid_print - deliberate transport: backend pipes stdout to dockie.log.
+  print('[${t.year}-${_two(t.month)}-${_two(t.day)} '
+      '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}] '
+      '[$level] $message');
+}
+
 // ── Path helpers ──
+// Test hook: overridden by widget_test.dart so the UI never touches the real
+// DB (Platform.environment is unmodifiable in the test harness).
+String dbPathOverride = '';
+
+// The backend passes the resolved DB path (packaged installs may keep it
+// next to the exe; see db._data_dir()); fall back to the per-user dir.
 String get _dbPath {
+  if (dbPathOverride.isNotEmpty) return dbPathOverride;
+  final fromEnv = Platform.environment['DOCKIE_DB_PATH'];
+  if (fromEnv != null && fromEnv.isNotEmpty) {
+    return fromEnv;
+  }
   final profile = Platform.environment['USERPROFILE'] ??
       Platform.environment['HOME'] ??
       '.';
@@ -44,19 +79,23 @@ class _SearchResult {
 }
 
 class SpotlightApp extends StatelessWidget {
+  const SpotlightApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Dockie Spotlight Search',
       debugShowCheckedModeBanner: false,
-      home: SearchOverlay(),
+      home: const SearchOverlay(),
     );
   }
 }
 
 class SearchOverlay extends StatefulWidget {
+  const SearchOverlay({super.key});
+
   @override
-  _SearchOverlayState createState() => _SearchOverlayState();
+  State<SearchOverlay> createState() => _SearchOverlayState();
 }
 
 class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProviderStateMixin {
@@ -96,6 +135,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   @override
   void initState() {
     super.initState();
+    _log('UI state initializing');
     // Initialize the animation controller for a fade-in effect
     _animationController = AnimationController(
       duration: Duration(milliseconds: 500),
@@ -127,8 +167,9 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     super.dispose();
   }
 
-  // Close the app. The Python backend relaunches it on the next triple-F.
+  // Close the app. The Python backend relaunches it on the next Alt+Space.
   void _closeApp() {
+    _log('Closing overlay');
     exit(0);
   }
 
@@ -166,15 +207,20 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   // ── DB ──
   void _initDb() {
+    final path = _dbPath;
+    _log('DB init: path=$path');
     try {
-      if (!File(_dbPath).existsSync()) {
+      if (!File(path).existsSync()) {
         _dbReady = false;
+        _log('DB init: index.db NOT FOUND at $path', level: 'WARN');
         return;
       }
-      _db = sqlite3.open(_dbPath);
+      _db = sqlite3.open(path);
       _dbReady = true;
-    } catch (_) {
+      _log('DB init: opened $path');
+    } catch (e) {
       _dbReady = false;
+      _log('DB init: failed to open $path: $e', level: 'ERROR');
     }
   }
 
@@ -203,6 +249,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   void _performSearch(String query) {
     if (!_dbReady) {
+      _log('Search: DB not ready for query "$query"', level: 'WARN');
       setState(() => _showResults = true);
       return;
     }
@@ -211,6 +258,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     final likeContains = '%$query%';
 
     final results = <_SearchResult>[];
+    final stopwatch = Stopwatch()..start();
     // Use a fresh connection per search so we always read the latest committed
     // rows (the watcher/worker write to the DB from another process).
     final db = sqlite3.open(_dbPath);
@@ -239,11 +287,15 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
           row['rank'] as int,
         ));
       }
-    } catch (_) {
+    } catch (e) {
       // Leave results empty rather than showing stale rows.
+      _log('Search: query failed "$query": $e', level: 'ERROR');
     } finally {
       db.dispose();
     }
+    stopwatch.stop();
+    _log('Search: "$query" -> ${results.length} results in '
+        '${stopwatch.elapsedMilliseconds} ms');
 
     setState(() {
       _results = results;
@@ -259,14 +311,16 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   // ── File actions ──
   Future<void> _openFile(String path) async {
+    _log('Open file: $path');
     try {
       await Process.run('cmd', ['/c', 'start', '', path]);
-    } catch (_) {
-      // Ignore launch errors — still close the overlay.
+    } catch (e) {
+      _log('Open file failed: $path: $e', level: 'ERROR');
     }
   }
 
   Future<void> _openFileLocation(String path) async {
+    _log('Reveal in Explorer: $path');
     try {
       // Detached so the launched process survives the app exiting right after.
       await Process.start(
@@ -274,14 +328,15 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
         ['/select,', path],
         mode: ProcessStartMode.detached,
       );
-    } catch (_) {
-      // Ignore launch errors — still close the overlay.
+    } catch (e) {
+      _log('Reveal in Explorer failed: $path: $e', level: 'ERROR');
     }
   }
 
   Future<void> _activateSelected({bool location = false}) async {
     if (_results.isNotEmpty && _selectedIndex >= 0) {
       final path = _results[_selectedIndex].path;
+      _log('Activate index=$_selectedIndex location=$location path=$path');
       if (location) {
         await _openFileLocation(path);
       } else {
@@ -292,7 +347,9 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   }
 
   Future<void> _activateResult(int index) async {
-    if (HardwareKeyboard.instance.isShiftPressed) {
+    final location = HardwareKeyboard.instance.isShiftPressed;
+    _log('Activate result $index location=$location');
+    if (location) {
       await _openFileLocation(_results[index].path);
     } else {
       await _openFile(_results[index].path);
@@ -302,10 +359,8 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   // ── Keyboard ──
   static final Set<LogicalKeyboardKey> _dismissKeys = {
-    // Modifiers
-    LogicalKeyboardKey.alt,
-    LogicalKeyboardKey.altLeft,
-    LogicalKeyboardKey.altRight,
+    // Modifiers (Alt excluded on purpose: Alt+Space is the summon hotkey and
+    // must not dismiss the overlay while the chord is still being typed).
     LogicalKeyboardKey.control,
     LogicalKeyboardKey.controlLeft,
     LogicalKeyboardKey.controlRight,
@@ -344,16 +399,19 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     if (evt is! KeyDownEvent) return KeyEventResult.ignored;
 
     if (_isDismissKey(evt.logicalKey)) {
+      _log('Dismiss key: ${evt.logicalKey}');
       _closeApp();
       return KeyEventResult.handled;
     }
 
     if (evt.logicalKey == LogicalKeyboardKey.escape) {
+      _log('Dismiss key: Escape');
       _closeApp();
       return KeyEventResult.handled;
     }
 
     if (evt.logicalKey == LogicalKeyboardKey.enter) {
+      _log('Enter pressed (shift=${HardwareKeyboard.instance.isShiftPressed})');
       _activateSelected(
         location: HardwareKeyboard.instance.isShiftPressed,
       );
@@ -399,6 +457,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     if (event is! KeyDownEvent) return;
     if (_isDismissKey(event.logicalKey) ||
         event.logicalKey == LogicalKeyboardKey.escape) {
+      _log('Overlay dismiss key: ${event.logicalKey}');
       _closeApp();
     }
   }

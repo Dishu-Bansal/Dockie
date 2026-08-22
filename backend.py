@@ -1,6 +1,6 @@
 """
 Dockie backend — scanning, extraction, file watching, hotkey, system tray,
-and PyQt indexing-status window. Launches the Flutter UI on triple-F.
+and PyQt indexing-status window. Launches the Flutter UI on Alt+Space.
 """
 
 import json
@@ -361,31 +361,41 @@ def start_watcher():
         return None
 
 
-# ── Hotkey listener ──
-_last_f_times: list[float] = []
+# ── Hotkey listener (Alt+Space) ──
+# Alt+Space summons the overlay. The low-level hook suppresses the Space
+# keystroke while Alt is held so Windows' system menu never opens, then
+# launches the Flutter UI from inside the event filter (a suppressed event
+# never reaches the on_press callbacks).
+_ALT_VK = 0x12      # VK_MENU (both Alt keys)
+_SPACE_VK = 0x20    # VK_SPACE
+_WM_KEYDOWN = 0x0100
+_WM_SYSKEYDOWN = 0x0104
+_WM_KEYUP = 0x0101
+_WM_SYSKEYUP = 0x0105
+_alt_pressed = False
 
 
 def _on_press(key):
-    global _last_f_times
+    # The hotkey is handled in _alt_space_filter (the event_filter runs before
+    # on_press and sees the raw VK codes); this stub satisfies the listener API.
+    pass
+
+
+def _alt_space_filter(msg, data):
+    """Track Alt state; suppress and trigger on Space-while-Alt."""
+    global _alt_pressed
     try:
-        is_f = (hasattr(key, 'char') and key.char and key.char.lower() == 'f')
+        vk = data.vkCode
+        if vk == _ALT_VK:
+            _alt_pressed = msg in (_WM_KEYDOWN, _WM_SYSKEYDOWN)
+            return True
+        if vk == _SPACE_VK and _alt_pressed:
+            log('Hotkey: Alt+Space pressed, launching Flutter UI')
+            launch_flutter()
+            return False  # suppress so Windows does not open the system menu
     except Exception:
-        try:
-            is_f = (key == keyboard.Key.f)
-        except Exception:
-            return
-    if not is_f:
-        _last_f_times.clear()  # any other key resets the triple-F sequence
-        return
-
-    now = time.time()
-    _last_f_times.append(now)
-    _last_f_times = [t for t in _last_f_times if t > now - 1.0]
-
-    if len(_last_f_times) >= 3:
-        _last_f_times.clear()
-        log('Hotkey: triple-F pressed, launching Flutter UI')
-        launch_flutter()
+        log_exc('Hotkey filter error')
+    return True
 
 
 # ── Flutter process management ──
@@ -402,11 +412,17 @@ def launch_flutter():
         return _flutter_proc
     try:
         log(f'Launching Flutter: {FLUTTER_EXE}')
+        # Tell the UI which DB to read — packaged builds may store it next to
+        # the exe (see db._data_dir()) rather than under ~/.dockie.
+        env = dict(os.environ)
+        env['DOCKIE_DB_PATH'] = db.DB_PATH
+        log(f'Flutter DB path passed: {db.DB_PATH}')
         proc = subprocess.Popen(
             [FLUTTER_EXE],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=env,
         )
         # Pipe Flutter output to our stdout in a background thread
         def _pipe_output():
@@ -809,18 +825,21 @@ def main():
     pipeline_thread = threading.Thread(target=pipeline, daemon=True)
     pipeline_thread.start()
 
-    # Hotkey listener
+    # Hotkey listener (Alt+Space)
     log('Starting hotkey listener...')
-    hotkey_listener = keyboard.Listener(on_press=_on_press)
+    hotkey_listener = keyboard.Listener(
+        on_press=_on_press,
+        win32_event_filter=_alt_space_filter,
+    )
     hotkey_listener.daemon = True
     try:
         hotkey_listener.start()
     except Exception:
         log_exc('Hotkey listener failed to start')
     if hotkey_listener.is_alive():
-        log('Hotkey listener active (triple-tap F)')
+        log('Hotkey listener active (Alt+Space)')
     else:
-        log('Hotkey listener NOT running — triple-F disabled', level='WARN')
+        log('Hotkey listener NOT running — Alt+Space disabled', level='WARN')
 
     # Start the file watcher once the pipeline finishes
     def _after_pipeline():
