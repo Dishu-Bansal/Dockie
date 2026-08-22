@@ -3,12 +3,10 @@ Updater.py — self-update for the Dockie desktop app.
 
 On startup this module checks the hardcoded GitHub repository's latest
 release. If the release version is newer than the bundled VERSION, it
-downloads the release binary next to the currently running executable,
-launches the new binary in a separate hidden process, and exits immediately
-so the old executable stops locking its file on disk.
-
-When the downloaded binary starts it takes over the canonical executable
-name (Dockie.exe) once the previous process has released it.
+downloads the new installer (dockie_setup_<version>.exe, built with Inno
+Setup) from the release, launches it in a separate process, and exits
+immediately so the running executable releases its file lock and the
+installer can replace it automatically.
 """
 
 import json
@@ -17,7 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
-import time
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -25,17 +23,16 @@ import urllib.request
 GITHUB_REPO = 'Dishu-Bansal/FileFinder'
 # Keep in sync with the release tag: tag 'v1.0.0' <-> VERSION '1.0.0'.
 VERSION = '1.0.0'
-RELEASE_ASSET = 'Dockie.exe'
+# Release assets are Inno Setup installers named dockie_setup_<version>.exe.
+RELEASE_ASSET_PREFIX = 'dockie_setup_'
 RELEASES_LATEST_URL = (
     f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 )
 _USER_AGENT = 'Dockie-Updater'
 
-# Windows process-creation flags used to launch the new binary invisibly.
+# Windows process-creation flags used to launch the installer invisibly.
 _CREATE_NO_WINDOW = 0x08000000
 _DETACHED_PROCESS = 0x00000008
-
-_UPDATE_SUFFIX = '.new'
 
 
 def _version_tuple(version):
@@ -64,6 +61,12 @@ def _latest_release():
     return data
 
 
+def _asset_name(tag):
+    """'v1.0.1' -> 'dockie_setup_1.0.1.exe'."""
+    version = '.'.join(str(p) for p in _version_tuple(tag))
+    return f'{RELEASE_ASSET_PREFIX}{version}.exe'
+
+
 def _find_asset(release, name):
     for asset in release.get('assets') or []:
         if asset.get('name') == name:
@@ -77,14 +80,14 @@ def _download(url, dest):
         shutil.copyfileobj(resp, out)
 
 
-def _update_path():
-    """Downloaded binary lands next to the running exe as '<name>.new'."""
-    return os.path.abspath(sys.executable) + _UPDATE_SUFFIX
+def _download_path(asset_name):
+    return os.path.join(tempfile.gettempdir(), asset_name)
 
 
-def _spawn_and_exit(path):
-    """Launch the new binary in a hidden, detached process, then kill this
-    process so the old executable stops locking its file on disk."""
+def _run_and_exit(path):
+    """Launch the installer in a new, detached process, then kill this
+    process so the running executable releases its file lock and the
+    installer can replace it."""
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -98,32 +101,12 @@ def _spawn_and_exit(path):
     os._exit(0)
 
 
-def _take_over_previous():
-    """If we are running from a '<name>.new' file, move ourselves over the
-    canonical executable name once the previous process has released it."""
-    if not getattr(sys, 'frozen', False):
-        return
-    exe = os.path.abspath(sys.executable)
-    if not exe.lower().endswith(_UPDATE_SUFFIX):
-        return
-    canonical = exe[: -len(_UPDATE_SUFFIX)]
-    for _ in range(100):  # wait up to ~10s for the old process to exit
-        try:
-            os.replace(exe, canonical)
-            print(f'[updater] Installed update at {canonical}')
-            return
-        except OSError:
-            time.sleep(0.1)
-
-
 def check_and_update():
     """Run the update check at app startup.
 
     Returns True if an update was applied (the process is exiting or about
     to exit), False if the app should keep starting normally.
     """
-    _take_over_previous()
-
     if not getattr(sys, 'frozen', False):
         print(f'[updater] Running from source; update check skipped (v{VERSION})')
         return False
@@ -138,17 +121,18 @@ def check_and_update():
         print(f'[updater] Already up to date (v{VERSION})')
         return False
 
-    asset = _find_asset(release, RELEASE_ASSET)
+    asset_name = _asset_name(latest)
+    asset = _find_asset(release, asset_name)
     if asset is None:
-        print(f'[updater] Release {latest} has no {RELEASE_ASSET} asset')
+        print(f'[updater] Release {latest} has no {asset_name} asset')
         return False
 
-    dest = _update_path()
+    dest = _download_path(asset_name)
     try:
         # Remove any stale/partial download from a previous attempt.
         if os.path.exists(dest):
             os.remove(dest)
-        print(f'[updater] Downloading {RELEASE_ASSET} {latest}...')
+        print(f'[updater] Downloading {asset_name}...')
         _download(asset['browser_download_url'], dest)
     except OSError as e:
         print(f'[updater] Download failed: {e}')
@@ -159,9 +143,9 @@ def check_and_update():
                 pass
         return False
 
-    print(f'[updater] Update {latest} ready; relaunching...')
-    _spawn_and_exit(dest)
-    return True  # unreachable; _spawn_and_exit never returns
+    print(f'[updater] Update {latest} ready; launching installer...')
+    _run_and_exit(dest)
+    return True  # unreachable; _run_and_exit never returns
 
 
 if __name__ == '__main__':
@@ -174,3 +158,4 @@ if __name__ == '__main__':
         newer = _is_newer(tag, VERSION)
         print(f'[updater] Latest release: {tag} '
               f'({"newer than current" if newer else "up to date"})')
+        print(f'[updater] Expected asset: {_asset_name(tag)}')
