@@ -11,6 +11,8 @@ import threading
 import time
 import winreg
 
+import Updater
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from pynput import keyboard
@@ -697,6 +699,10 @@ class IndexingWindow(QWidget):
 # ── Main ──
 def main():
     global _bridge
+    # If a newer release exists, download + relaunch it and exit so the
+    # current executable releases its file lock.
+    if Updater.check_and_update():
+        return
     _migrate_config()
     print('[backend] ========================================')
     print('[backend] Dockie backend starting...')
