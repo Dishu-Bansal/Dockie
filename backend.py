@@ -400,6 +400,10 @@ def launch_flutter():
 # ── Startup registration ──
 STARTUP_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_NAME = 'Dockie'
+# Older/installer names that also register the app for auto-start. The tray
+# toggle and startup sync manage all of them so unticking actually removes
+# every startup entry, not just the current name.
+_STARTUP_ALIASES = ('Dockie', 'FileFinder', 'DockieLauncher')
 
 
 def _startup_command():
@@ -438,28 +442,41 @@ def set_run_on_startup(enabled):
     _save_settings(settings)
 
 
+def _delete_startup_value(name):
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0,
+                            winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, name)
+    except FileNotFoundError:
+        pass  # already not registered
+    except OSError as e:
+        print(f'[backend] Failed to unregister startup ({name}): {e}')
+
+
 def enable_run_on_startup():
     try:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY) as key:
             winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, _startup_command())
     except OSError as e:
         print(f'[backend] Failed to register startup: {e}')
+    # Remove duplicate entries under older/alternate names so the app
+    # auto-starts exactly once.
+    for name in _STARTUP_ALIASES:
+        if name != STARTUP_NAME:
+            _delete_startup_value(name)
 
 
 def disable_run_on_startup():
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.DeleteValue(key, STARTUP_NAME)
-    except FileNotFoundError:
-        pass  # already not registered
-    except OSError as e:
-        print(f'[backend] Failed to unregister startup: {e}')
+    for name in _STARTUP_ALIASES:
+        _delete_startup_value(name)
 
 
 def sync_run_on_startup():
-    """Apply the persisted preference (default: auto-register at startup)."""
+    """Apply the persisted preference at startup (default: auto-register)."""
     if get_run_on_startup():
         enable_run_on_startup()
+    else:
+        disable_run_on_startup()
 
 
 def _migrate_config():
