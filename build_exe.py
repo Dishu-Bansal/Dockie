@@ -10,7 +10,8 @@ PyInstaller.__main__.run([
     MAIN_SCRIPT,
     '--onefile',  # Create a single executable
     # '--windowed',  # For GUI applications (remove for console applications)
-    # f'--icon={ICON_PATH}',  # Optional: Add an icon
+    f'--icon={ICON_PATH}',  # Optional: Add an icon
+    f'--add-data={ICON_PATH};.',  # Bundle the icon for runtime use (tray icon)
     '--name', f'{PROGRAM_NAME}',
     '--clean',  # Clean PyInstaller cache and remove temporary files
     '--noconsole',

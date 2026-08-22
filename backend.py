@@ -5,11 +5,14 @@ and PyQt indexing-status window. Launches the Flutter UI on triple-F.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import winreg
+
+import Updater
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -37,7 +40,9 @@ try:
 except ImportError:
     pass
 
-CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.dockie')
+# Data lives with the installed app (next to Dockie.exe); dev runs keep the
+# per-user .dockie dir. See db._data_dir().
+CONFIG_DIR = db.DATA_DIR
 SETTINGS_PATH = os.path.join(CONFIG_DIR, 'settings.json')
 LOG_PATH = os.path.join(CONFIG_DIR, 'dockie.log')
 applog.configure(LOG_PATH)
@@ -56,6 +61,8 @@ else:
 # logging never fails on a missing stdout/stderr. applog.log() writes to
 # the same handle directly.
 if sys.stdout is None or sys.stderr is None:
+    # applog.get_handle() creates the dir and falls back to devnull when the
+    # config dir is not writable.
     _log = applog.get_handle()
     if sys.stdout is None:
         sys.stdout = _log
@@ -417,6 +424,10 @@ def launch_flutter():
 # ── Startup registration ──
 STARTUP_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_NAME = 'Dockie'
+# Older/installer names that also register the app for auto-start. The tray
+# toggle and startup sync manage all of them so unticking actually removes
+# every startup entry, not just the current name.
+_STARTUP_ALIASES = ('Dockie', 'FileFinder', 'DockieLauncher')
 
 
 def _startup_command():
@@ -461,44 +472,70 @@ def set_run_on_startup(enabled):
     _save_settings(settings)
 
 
+def _delete_startup_value(name):
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0,
+                            winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, name)
+    except FileNotFoundError:
+        pass  # already not registered
+    except OSError as e:
+        log(f'Failed to unregister startup ({name}): {e}')
+
+
 def enable_run_on_startup():
     try:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY) as key:
             winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, _startup_command())
     except OSError as e:
         log(f'Failed to register startup: {e}')
+    # Remove duplicate entries under older/alternate names so the app
+    # auto-starts exactly once.
+    for name in _STARTUP_ALIASES:
+        if name != STARTUP_NAME:
+            _delete_startup_value(name)
 
 
 def disable_run_on_startup():
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.DeleteValue(key, STARTUP_NAME)
-    except FileNotFoundError:
-        pass  # already not registered
-    except OSError as e:
-        log(f'Failed to unregister startup: {e}')
+    for name in _STARTUP_ALIASES:
+        _delete_startup_value(name)
 
 
 def sync_run_on_startup():
-    """Apply the persisted preference (default: auto-register at startup)."""
+    """Apply the persisted preference at startup (default: auto-register)."""
     if get_run_on_startup():
         enable_run_on_startup()
+    else:
+        disable_run_on_startup()
 
 
 def _migrate_config():
-    """Move data from the old .filefinder dir into .dockie on first run."""
-    old_dir = os.path.join(os.path.expanduser('~'), '.filefinder')
-    if not os.path.isdir(old_dir) or old_dir == CONFIG_DIR:
-        return
+    """Move app data into the current data dir on first run.
+
+    Covers the rebrand move (.filefinder -> .dockie) and the move of
+    packaged builds into the install dir. Older dirs are checked newest
+    first so the most recent data wins.
+    """
     if os.path.exists(os.path.join(CONFIG_DIR, 'index.db')):
-        return  # already migrated or fresh install
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    for name in ('index.db', 'index.db-wal', 'index.db-shm', 'settings.json'):
-        src = os.path.join(old_dir, name)
-        dst = os.path.join(CONFIG_DIR, name)
-        if os.path.exists(src) and not os.path.exists(dst):
-            os.replace(src, dst)
-            log(f'Migrated {name} -> {CONFIG_DIR}')
+        return  # already in place or fresh install
+    for old_dir in (os.path.join(os.path.expanduser('~'), '.dockie'),
+                    os.path.join(os.path.expanduser('~'), '.filefinder')):
+        if not os.path.isdir(old_dir) or os.path.abspath(old_dir) == os.path.abspath(CONFIG_DIR):
+            continue
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        migrated = False
+        for name in ('index.db', 'index.db-wal', 'index.db-shm', 'settings.json'):
+            src = os.path.join(old_dir, name)
+            dst = os.path.join(CONFIG_DIR, name)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    os.replace(src, dst)
+                except OSError:
+                    shutil.move(src, dst)  # cross-drive (install dir on another volume)
+                log(f'Migrated {name} -> {CONFIG_DIR}')
+                migrated = True
+        if migrated:
+            return
 
 
 # ── System tray ──
@@ -507,7 +544,17 @@ _bridge = None  # Qt signal bridge for tray -> window (set once in main())
 
 
 def _make_tray_icon():
-    """Generate a 64x64 file-finder icon (magnifying glass over document)."""
+    """Tray icon: robot.ico when available, else a generated fallback."""
+    if getattr(sys, 'frozen', False):
+        path = os.path.join(sys._MEIPASS, 'robot.ico')
+    else:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ico')
+    if os.path.exists(path):
+        try:
+            return Image.open(path).convert('RGBA')
+        except OSError:
+            pass
+    # Fallback: 64x64 file-finder icon (magnifying glass over a document).
     img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     # Document shape (light blue rounded rect)
@@ -735,6 +782,10 @@ class IndexingWindow(QWidget):
 def main():
     global _bridge
     try:
+        # If a newer release exists, download + relaunch the installer and
+        # exit so the current executable releases its file lock.
+        if Updater.check_and_update():
+            return
         _migrate_config()
         log('========================================')
         log('Dockie backend starting...')
