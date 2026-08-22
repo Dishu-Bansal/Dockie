@@ -4,32 +4,42 @@ import os
 import sqlite3
 import time
 
+import applog
+
 DB_DIR = os.path.join(os.path.expanduser('~'), '.dockie')
 DB_PATH = os.path.join(DB_DIR, 'index.db')
 
 
 def get_conn():
     """Return a connection. Each thread must call this — SQLite connections are NOT thread-safe."""
-    os.makedirs(DB_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA synchronous=NORMAL')
-    return conn
+    try:
+        os.makedirs(DB_DIR, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA synchronous=NORMAL')
+        return conn
+    except Exception:
+        applog.log_exc(f'DB: failed to open {DB_PATH}')
+        raise
 
 
 def init_db(conn):
-    conn.execute('''CREATE TABLE IF NOT EXISTS files (
-        path      TEXT PRIMARY KEY,
-        filename  TEXT,
-        text      TEXT,
-        size      INTEGER,
-        modified  REAL,
-        scanned_at REAL,
-        indexed_at REAL
-    )''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_files_text ON files(text)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_files_scanned ON files(scanned_at)')
-    conn.commit()
+    try:
+        conn.execute('''CREATE TABLE IF NOT EXISTS files (
+            path      TEXT PRIMARY KEY,
+            filename  TEXT,
+            text      TEXT,
+            size      INTEGER,
+            modified  REAL,
+            scanned_at REAL,
+            indexed_at REAL
+        )''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_files_text ON files(text)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_files_scanned ON files(scanned_at)')
+        conn.commit()
+    except Exception:
+        applog.log_exc('DB: failed to initialize schema')
+        raise
 
 
 def insert_scan_result(conn, path):
@@ -140,22 +150,26 @@ def search(conn, query, limit=20):
     if not q:
         return []
 
-    like = f'%{q}%'
-    rows = conn.execute('''
-        SELECT path, filename,
-               CASE
-                   WHEN filename LIKE ? THEN 1
-                   WHEN filename LIKE ? THEN 2
-                   WHEN text IS NOT NULL AND text LIKE ? THEN 3
-                   ELSE 4
-               END AS rank,
-               COALESCE(text, '') AS fulltext
-        FROM files
-        WHERE filename LIKE ?
-           OR (text IS NOT NULL AND text LIKE ?)
-        ORDER BY rank, filename
-        LIMIT ?
-    ''', (f'{q}%', like, like, like, like, limit)).fetchall()
+    try:
+        like = f'%{q}%'
+        rows = conn.execute('''
+            SELECT path, filename,
+                   CASE
+                       WHEN filename LIKE ? THEN 1
+                       WHEN filename LIKE ? THEN 2
+                       WHEN text IS NOT NULL AND text LIKE ? THEN 3
+                       ELSE 4
+                   END AS rank,
+                   COALESCE(text, '') AS fulltext
+            FROM files
+            WHERE filename LIKE ?
+               OR (text IS NOT NULL AND text LIKE ?)
+            ORDER BY rank, filename
+            LIMIT ?
+        ''', (f'{q}%', like, like, like, like, limit)).fetchall()
+    except Exception:
+        applog.log_exc(f'DB: search failed for query {q!r}')
+        return []
 
     results = []
     for path, filename, rank, fulltext in rows:

@@ -3,6 +3,8 @@
 import os
 import fitz  # PyMuPDF
 
+import applog
+
 
 def _suppress_stderr():
     """Context manager that redirects stderr to devnull to silence MuPDF warnings."""
@@ -24,7 +26,8 @@ def extract_text(filepath: str) -> str:
     try:
         with _suppress_stderr():
             doc = fitz.open(filepath)
-    except Exception:
+    except Exception as e:
+        applog.log(f'Extract: cannot open {filepath!r}: {e}', level='WARN')
         return ""
 
     parts = []
@@ -36,6 +39,8 @@ def extract_text(filepath: str) -> str:
                     parts.append(page_text)
             except Exception:
                 continue
+    except Exception as e:
+        applog.log(f'Extract: error reading {filepath!r}: {e}', level='WARN')
     finally:
         doc.close()
 
@@ -47,7 +52,8 @@ def extract_text_with_pages(filepath: str) -> list[tuple[int, str]]:
     try:
         with _suppress_stderr():
             doc = fitz.open(filepath)
-    except Exception:
+    except Exception as e:
+        applog.log(f'Extract: cannot open {filepath!r}: {e}', level='WARN')
         return []
 
     pages = []
