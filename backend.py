@@ -1,6 +1,7 @@
 """
 Dockie backend — scanning, extraction, file watching, hotkey, system tray,
-and PyQt indexing-status window. Launches the Flutter UI on triple-F.
+and PyQt indexing-status window. Launches the Flutter UI on triple-Ctrl
+(left or right).
 """
 
 import json
@@ -14,9 +15,10 @@ import winreg
 
 import Updater
 
+from pynput import keyboard
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from pynput import keyboard
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -361,32 +363,34 @@ def start_watcher():
         return None
 
 
-# ── Hotkey listener ──
-_last_f_times: list[float] = []
+# ── Hotkey (triple-Ctrl) ──
+# Three Ctrl presses (left or right) within one second summon the overlay.
+# No OS-level suppression is needed (unlike Alt+Space, Ctrl has no system
+# side-effect such as the window system menu).
+_CTRL_VKS = {0x11, 0xA2, 0xA3}  # VK_CONTROL / VK_LCONTROL / VK_RCONTROL
+_last_ctrl_times: list[float] = []
+_hotkey_listener = None
 
 
 def _on_press(key):
-    global _last_f_times
-    try:
-        is_f = (hasattr(key, 'char') and key.char and key.char.lower() == 'f')
-    except Exception:
-        try:
-            is_f = (key == keyboard.Key.f)
-        except Exception:
-            return
-    if not is_f:
-        _last_f_times.clear()  # any other key resets the triple-F sequence
+    global _last_ctrl_times
+    # pynput exposes the VK on KeyCode directly but on Key enum members only
+    # via .value.vk (e.g. Key.ctrl_l is <162> with key.vk == None).
+    vk = getattr(key, 'vk', None)
+    if vk is None:
+        vk = getattr(getattr(key, 'value', None), 'vk', None)
+    if vk not in _CTRL_VKS:
+        _last_ctrl_times.clear()  # any other key resets the triple-Ctrl sequence
         return
 
     now = time.time()
-    _last_f_times.append(now)
-    _last_f_times = [t for t in _last_f_times if t > now - 1.0]
+    _last_ctrl_times.append(now)
+    _last_ctrl_times = [t for t in _last_ctrl_times if t > now - 1.0]
 
-    if len(_last_f_times) >= 3:
-        _last_f_times.clear()
-        log('Hotkey: triple-F pressed, launching Flutter UI')
+    if len(_last_ctrl_times) >= 3:
+        _last_ctrl_times.clear()
+        log('Hotkey: triple-Ctrl pressed, launching Flutter UI')
         launch_flutter()
-
 
 # ── Flutter process management ──
 _flutter_proc = None  # process handle for the on-demand Flutter UI
@@ -402,11 +406,17 @@ def launch_flutter():
         return _flutter_proc
     try:
         log(f'Launching Flutter: {FLUTTER_EXE}')
+        # Tell the UI which DB to read — packaged builds may store it next to
+        # the exe (see db._data_dir()) rather than under ~/.dockie.
+        env = dict(os.environ)
+        env['DOCKIE_DB_PATH'] = db.DB_PATH
+        log(f'Flutter DB path passed: {db.DB_PATH}')
         proc = subprocess.Popen(
             [FLUTTER_EXE],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=env,
         )
         # Pipe Flutter output to our stdout in a background thread
         def _pipe_output():
@@ -809,18 +819,19 @@ def main():
     pipeline_thread = threading.Thread(target=pipeline, daemon=True)
     pipeline_thread.start()
 
-    # Hotkey listener
-    log('Starting hotkey listener...')
-    hotkey_listener = keyboard.Listener(on_press=_on_press)
-    hotkey_listener.daemon = True
+    # Hotkey: triple-Ctrl (left or right) via a pynput listener
+    log('Starting hotkey listener (triple-Ctrl)...')
+    global _hotkey_listener
+    _hotkey_listener = keyboard.Listener(on_press=_on_press)
+    _hotkey_listener.daemon = True
     try:
-        hotkey_listener.start()
+        _hotkey_listener.start()
     except Exception:
         log_exc('Hotkey listener failed to start')
-    if hotkey_listener.is_alive():
-        log('Hotkey listener active (triple-tap F)')
+    if _hotkey_listener.is_alive():
+        log('Hotkey listener active (triple-Ctrl)')
     else:
-        log('Hotkey listener NOT running — triple-F disabled', level='WARN')
+        log('Hotkey listener NOT running - triple-Ctrl disabled', level='WARN')
 
     # Start the file watcher once the pipeline finishes
     def _after_pipeline():
@@ -867,7 +878,8 @@ def main():
     log('Shutting down...')
     _state.cancel.set()
     try:
-        hotkey_listener.stop()
+        if _hotkey_listener is not None:
+            _hotkey_listener.stop()
     except Exception:
         pass
     if _tray_icon is not None:

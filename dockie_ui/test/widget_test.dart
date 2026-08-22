@@ -18,7 +18,7 @@ void main() {
     // opens the real index).
     dbPathOverride = '${Directory.systemTemp.path}\\dockie-test\\index.db';
 
-    await tester.pumpWidget(SpotlightApp());
+    await tester.pumpWidget(const SpotlightApp());
     await tester.pump(const Duration(milliseconds: 100));
 
     // The spotlight search bar must still render (regression: the whole
