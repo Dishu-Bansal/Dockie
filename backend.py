@@ -258,11 +258,9 @@ def run_extract():
                 continue
             rows = db.get_pending_batch(conn, limit=1)
             if not rows:
-                total = db.get_total_count(conn)
-                indexed = db.get_indexed_count(conn)
                 with _state.lock:
-                    _state.files_found = total
-                    _state.files_done = indexed
+                    _state.files_found = db.get_total_count(conn)
+                    _state.files_done = db.get_indexed_count(conn)
                     _state.phase = 'done'
                 # Flush WAL into the main .db file so external readers see the
                 # latest state without waiting for a restart.
@@ -274,6 +272,8 @@ def run_extract():
             path, filename = rows[0]
             with _state.lock:
                 _state.current_file = filename
+                if _state.phase == 'done':
+                    _state.phase = 'extract'  # new/requeued work arrived after idle
             try:
                 text = extract_text(path)
             except Exception as e:
@@ -282,9 +282,15 @@ def run_extract():
             db.mark_extracted(conn, path, text)
             conn.commit()
             with _state.lock:
-                _state.files_done += 1
                 if not text:
                     _state.files_empty += 1
+                # The DB is the source of truth: found = all tracked files,
+                # done = files with extracted text. Re-syncing every item keeps
+                # the UI honest when new/requeued files arrive after 'done'
+                # (otherwise the in-memory counter over-runs the stale total
+                # and Done shows bigger than Found).
+                _state.files_found = db.get_total_count(conn)
+                _state.files_done = db.get_indexed_count(conn)
             if _state.files_done % 50 == 0:
                 log(f'Extract progress: {_state.files_done:,}/{_state.files_found:,}')
     except Exception:
@@ -766,7 +772,7 @@ class IndexingWindow(QWidget):
 
         if _state.files_found > 0:
             self.progress_bar.setRange(0, _state.files_found)
-            self.progress_bar.setValue(_state.files_done)
+            self.progress_bar.setValue(min(_state.files_done, _state.files_found))
         else:
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
