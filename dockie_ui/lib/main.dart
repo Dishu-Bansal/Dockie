@@ -32,7 +32,7 @@ String get _dbPath {
   final profile = Platform.environment['USERPROFILE'] ??
       Platform.environment['HOME'] ??
       '.';
-  return '$profile\\.filefinder\\index.db';
+  return '$profile\\.dockie\\index.db';
 }
 
 class _SearchResult {

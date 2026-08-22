@@ -4,7 +4,7 @@ import os
 import sqlite3
 import time
 
-DB_DIR = os.path.join(os.path.expanduser('~'), '.filefinder')
+DB_DIR = os.path.join(os.path.expanduser('~'), '.dockie')
 DB_PATH = os.path.join(DB_DIR, 'index.db')
 
 
