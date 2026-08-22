@@ -9,23 +9,14 @@ import applog
 
 
 def _data_dir():
-    """Where app data lives: next to the installed exe when that folder is
-    writable, otherwise the per-user .dockie dir.
+    """Where app data lives: always the per-user ~/.dockie dir.
 
-    Packaged builds run from the app folder (Inno Setup installs
-    dockie_ui.exe next to Dockie.exe), so the DB travels with the app. When
-    the install folder is read-only (e.g. Program Files) the DB falls back
-    to the per-user dir so the app keeps working."""
-    if getattr(sys, 'frozen', False):
-        install_dir = os.path.dirname(os.path.abspath(sys.executable))
-        probe = os.path.join(install_dir, '.dockie-write-test')
-        try:
-            with open(probe, 'w'):
-                pass
-            os.remove(probe)
-            return install_dir
-        except OSError:
-            pass
+    A Program Files install is read-only for normal (non-elevated) runs, so
+    the old probe would silently switch the DB between the install dir and
+    the user dir depending on elevation — leaving the log/DB in neither
+    expected place and splitting data across two locations. A single
+    per-user dir keeps the DB and log in one predictable place for every
+    launch."""
     return os.path.join(os.path.expanduser('~'), '.dockie')
 
 

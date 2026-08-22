@@ -42,8 +42,9 @@ try:
 except ImportError:
     pass
 
-# Data lives with the installed app (next to Dockie.exe); dev runs keep the
-# per-user .dockie dir. See db._data_dir().
+# App data always lives in the per-user .dockie dir — never in the install
+# folder (Program Files is read-only for non-elevated runs, and an elevated
+# first run would otherwise split data across two locations). See db._data_dir().
 CONFIG_DIR = db.DATA_DIR
 SETTINGS_PATH = os.path.join(CONFIG_DIR, 'settings.json')
 LOG_PATH = os.path.join(CONFIG_DIR, 'dockie.log')
@@ -529,13 +530,17 @@ def _migrate_config():
     """Move app data into the current data dir on first run.
 
     Covers the rebrand move (.filefinder -> .dockie) and the move of
-    packaged builds into the install dir. Older dirs are checked newest
-    first so the most recent data wins.
+    packaged builds that previously stored the DB next to the exe (e.g. an
+    elevated Program Files install). Older dirs are checked newest first so
+    the most recent data wins.
     """
     if os.path.exists(os.path.join(CONFIG_DIR, 'index.db')):
         return  # already in place or fresh install
-    for old_dir in (os.path.join(os.path.expanduser('~'), '.dockie'),
-                    os.path.join(os.path.expanduser('~'), '.filefinder')):
+    old_dirs = [os.path.join(os.path.expanduser('~'), '.dockie'),
+                os.path.join(os.path.expanduser('~'), '.filefinder')]
+    if getattr(sys, 'frozen', False):
+        old_dirs.append(os.path.dirname(os.path.abspath(sys.executable)))
+    for old_dir in old_dirs:
         if not os.path.isdir(old_dir) or os.path.abspath(old_dir) == os.path.abspath(CONFIG_DIR):
             continue
         os.makedirs(CONFIG_DIR, exist_ok=True)
