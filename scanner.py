@@ -2,6 +2,8 @@
 
 import os
 
+import applog
+
 SYSTEM_ROOT_NAMES = {
     '$Recycle.Bin', 'System Volume Information', '$WINDOWS.~TMP',
     '$Windows.~WS', '$WinREAgent', 'Recovery', 'MSOCache',
@@ -88,10 +90,13 @@ def find_pdfs(cancel_event=None):
     """Generator that yields PDF paths from all drives.
     Optionally accepts a threading.Event to cancel mid-scan."""
     roots = get_available_roots()
+    applog.log(f'Scanner: scanning {len(roots)} drive(s): {", ".join(roots)}')
     user_skip_set = _build_user_skip_set()
 
     for root in roots:
         drive = root.rstrip('\\/')
+        applog.log(f'Scanner: walking {root}')
+        walked = 0
         try:
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
                 if cancel_event and cancel_event.is_set():
@@ -113,6 +118,11 @@ def find_pdfs(cancel_event=None):
                     if cancel_event and cancel_event.is_set():
                         return
                     if fname.lower().endswith('.pdf'):
+                        walked += 1
                         yield os.path.join(dirpath, fname)
         except PermissionError:
+            continue  # expected on protected/system dirs
+        except Exception:
+            applog.log_exc(f'Scanner: unexpected error on {root}')
             continue
+        applog.log(f'Scanner: finished {root} ({walked:,} PDFs)')

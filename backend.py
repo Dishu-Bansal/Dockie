@@ -28,6 +28,8 @@ from PyQt6.QtGui import QFont
 from scanner import find_pdfs, get_available_roots
 from content_extractor import extract_text
 import db
+import applog
+from applog import log, log_exc
 
 # System tray (optional — graceful if pystray/Pillow not installed)
 _USE_TRAY = False
@@ -42,6 +44,8 @@ except ImportError:
 # per-user .dockie dir. See db._data_dir().
 CONFIG_DIR = db.DATA_DIR
 SETTINGS_PATH = os.path.join(CONFIG_DIR, 'settings.json')
+LOG_PATH = os.path.join(CONFIG_DIR, 'dockie.log')
+applog.configure(LOG_PATH)
 
 if getattr(sys, 'frozen', False):
     # Installed layout: Inno Setup installs dockie_ui.exe next to Dockie.exe.
@@ -52,15 +56,14 @@ else:
                                'dockie_ui', 'build', 'windows', 'x64',
                                'runner', 'Release', 'dockie_ui.exe')
 
-# When launched without a console (pythonw.exe, e.g. at login), redirect prints
-# to a log file so logging does not fail on a missing stdout/stderr.
+# When launched without a console (pythonw.exe, e.g. at login), redirect
+# stray prints (third-party output, our own logs) into dockie.log so
+# logging never fails on a missing stdout/stderr. applog.log() writes to
+# the same handle directly.
 if sys.stdout is None or sys.stderr is None:
-    try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        _log = open(os.path.join(CONFIG_DIR, 'dockie.log'), 'a', buffering=1,
-                    encoding='utf-8', errors='replace')
-    except OSError:
-        _log = open(os.devnull, 'w')
+    # applog.get_handle() creates the dir and falls back to devnull when the
+    # config dir is not writable.
+    _log = applog.get_handle()
     if sys.stdout is None:
         sys.stdout = _log
     if sys.stderr is None:
@@ -128,16 +131,19 @@ class PdfWatcher(FileSystemEventHandler):
         try:
             fn(c)
             c.commit()
+        except Exception:
+            log_exc(f'Watcher handler failed ({fn.__name__})')
         finally:
             c.close()
 
 
 # ── Scan + Extract pipeline ──
 def run_scan():
-    print('[backend] Scan started — walking filesystem for PDFs...')
+    log('Scan started — walking filesystem for PDFs...')
     conn = db.get_conn()
     try:
         existing = db.get_all_paths(conn)
+        log(f'Scan: {len(existing):,} paths already in DB')
         count = 0
         for path in find_pdfs(_state.cancel):
             count += 1
@@ -148,22 +154,24 @@ def run_scan():
             if count % 500 == 0:
                 with _state.lock:
                     _state.files_found = count
-                print(f'[backend] Scan progress: {count:,} files found')
+                log(f'Scan progress: {count:,} files found')
             if _state.cancel.is_set():
                 conn.commit()
-                print('[backend] Scan cancelled')
+                log('Scan cancelled')
                 return
         conn.commit()
         with _state.lock:
             _state.files_found = count
-        print(f'[backend] Scan complete: {count:,} total files found')
+        log(f'Scan complete: {count:,} total files found')
+    except Exception:
+        log_exc('Scan failed')
     finally:
         conn.close()
 
 
 def diff_scan():
     """Reconcile the DB with disk for changes made while the app was shutdown."""
-    print('[backend] Diff scan started...')
+    log('Diff scan started...')
     conn = db.get_conn()
     try:
         db_meta = {
@@ -181,7 +189,7 @@ def diff_scan():
         for path in find_pdfs(_state.cancel):
             if _state.cancel.is_set():
                 conn.commit()
-                print('[backend] Diff scan cancelled')
+                log('Diff scan cancelled')
                 return
 
             # Keep write transactions short so the extractor is never blocked
@@ -230,14 +238,16 @@ def diff_scan():
 
         conn.commit()
         _state.extract_wake.set()
-        print(f'[backend] Diff scan complete: {new_count} new, '
+        log(f'Diff scan complete: {new_count} new, '
               f'{modified_count} modified, {deleted_count} deleted')
+    except Exception:
+        log_exc('Diff scan failed')
     finally:
         conn.close()
 
 
 def run_extract():
-    print('[backend] Extraction worker started...')
+    log('Extraction worker started...')
     conn = db.get_conn()
     try:
         while not _state.cancel.is_set():
@@ -264,7 +274,8 @@ def run_extract():
                 _state.current_file = filename
             try:
                 text = extract_text(path)
-            except Exception:
+            except Exception as e:
+                log(f'Extract failed for {path!r}: {e}', level='WARN')
                 text = ''
             db.mark_extracted(conn, path, text)
             conn.commit()
@@ -273,54 +284,59 @@ def run_extract():
                 if not text:
                     _state.files_empty += 1
             if _state.files_done % 50 == 0:
-                print(f'[backend] Extract progress: {_state.files_done:,}/{_state.files_found:,}')
+                log(f'Extract progress: {_state.files_done:,}/{_state.files_found:,}')
+    except Exception:
+        log_exc('Extraction worker failed')
     finally:
         conn.close()
-    print(f'[backend] Extraction worker stopped: {_state.files_done:,} indexed '
+    log(f'Extraction worker stopped: {_state.files_done:,} indexed '
           f'({_state.files_empty:,} empty)')
 
 
 def pipeline():
-    conn = db.get_conn()
     try:
-        db.init_db(conn)
-        total = db.get_total_count(conn)
-        pending = db.get_pending_count(conn)
-    finally:
-        conn.close()
-
-    print(f'[backend] DB state: {total} total, {pending} pending extraction')
-
-    if total == 0:
-        _state.phase = 'scan'
-        print('[backend] Phase -> scan (fresh start)')
-        run_scan()
-        if _state.cancel.is_set():
-            return
-        c = db.get_conn()
+        conn = db.get_conn()
         try:
-            with _state.lock:
-                _state.files_found = db.get_total_count(c)
-                _state.files_done = db.get_indexed_count(c)
+            db.init_db(conn)
+            total = db.get_total_count(conn)
+            pending = db.get_pending_count(conn)
         finally:
-            c.close()
-    else:
-        with _state.lock:
-            _state.files_found = total
-            _state.files_done = total - pending
-        if pending > 0:
-            print(f'[backend] Resuming: {pending} pending files to index')
+            conn.close()
 
-    # Start the persistent extractor — it drains the initial backlog now and
-    # keeps running to index new/requeued files the watcher adds later.
-    _state.phase = 'extract'
-    print('[backend] Phase -> extract (persistent worker)')
-    threading.Thread(target=run_extract, daemon=True).start()
+        log(f'DB state: {total} total, {pending} pending extraction')
 
-    # Reconcile with disk in the background for changes made while shutdown.
-    if total > 0:
-        print('[backend] Starting background diff scan...')
-        threading.Thread(target=diff_scan, daemon=True).start()
+        if total == 0:
+            _state.phase = 'scan'
+            log('Phase -> scan (fresh start)')
+            run_scan()
+            if _state.cancel.is_set():
+                return
+            c = db.get_conn()
+            try:
+                with _state.lock:
+                    _state.files_found = db.get_total_count(c)
+                    _state.files_done = db.get_indexed_count(c)
+            finally:
+                c.close()
+        else:
+            with _state.lock:
+                _state.files_found = total
+                _state.files_done = total - pending
+            if pending > 0:
+                log(f'Resuming: {pending} pending files to index')
+
+        # Start the persistent extractor — it drains the initial backlog now and
+        # keeps running to index new/requeued files the watcher adds later.
+        _state.phase = 'extract'
+        log('Phase -> extract (persistent worker)')
+        threading.Thread(target=run_extract, daemon=True).start()
+
+        # Reconcile with disk in the background for changes made while shutdown.
+        if total > 0:
+            log('Starting background diff scan...')
+            threading.Thread(target=diff_scan, daemon=True).start()
+    except Exception:
+        log_exc('Pipeline failed')
 
 
 def start_watcher():
@@ -330,18 +346,18 @@ def start_watcher():
             if os.path.exists(r):
                 roots.append(r)
         if not roots:
-            print('[backend] Watcher: no drive roots found')
+            log('Watcher: no drive roots found')
             return None
-        print(f'[backend] Watcher: starting on {len(roots)} drives: {", ".join(roots)}')
+        log(f'Watcher: starting on {len(roots)} drives: {", ".join(roots)}')
         observer = Observer()
         handler = PdfWatcher()
         for r in roots:
             observer.schedule(handler, r, recursive=True)
         observer.start()
-        print('[backend] Watcher: active')
+        log('Watcher: active')
         return observer
-    except Exception as e:
-        print(f'[backend] Watcher: failed to start — {e}')
+    except Exception:
+        log_exc('Watcher failed to start')
         return None
 
 
@@ -368,7 +384,7 @@ def _on_press(key):
 
     if len(_last_f_times) >= 3:
         _last_f_times.clear()
-        print('[backend] Hotkey: triple-F pressed, launching Flutter UI')
+        log('Hotkey: triple-F pressed, launching Flutter UI')
         launch_flutter()
 
 
@@ -379,13 +395,13 @@ _flutter_proc = None  # process handle for the on-demand Flutter UI
 def launch_flutter():
     global _flutter_proc
     if not os.path.exists(FLUTTER_EXE):
-        print(f'[backend] Flutter exe NOT FOUND at: {FLUTTER_EXE}')
+        log(f'Flutter exe NOT FOUND at: {FLUTTER_EXE}')
         return None
     if _flutter_proc is not None and _flutter_proc.poll() is None:
-        print('[backend] Flutter already running, skipping launch')
+        log('Flutter already running, skipping launch')
         return _flutter_proc
     try:
-        print(f'[backend] Launching Flutter: {FLUTTER_EXE}')
+        log(f'Launching Flutter: {FLUTTER_EXE}')
         proc = subprocess.Popen(
             [FLUTTER_EXE],
             stdout=subprocess.PIPE,
@@ -395,13 +411,13 @@ def launch_flutter():
         # Pipe Flutter output to our stdout in a background thread
         def _pipe_output():
             for line in proc.stdout:
-                print(f'[flutter] {line.rstrip()}')
+                log(f'flutter: {line.rstrip()}')
         threading.Thread(target=_pipe_output, daemon=True).start()
         _flutter_proc = proc
-        print(f'[backend] Flutter launched (pid={proc.pid})')
+        log(f'Flutter launched (pid={proc.pid})')
         return proc
-    except Exception as e:
-        print(f'[backend] Failed to launch Flutter: {e}')
+    except Exception:
+        log_exc(f'Failed to launch Flutter: {FLUTTER_EXE}')
         return None
 
 
@@ -430,14 +446,20 @@ def _load_settings():
     try:
         with open(SETTINGS_PATH, 'r') as f:
             return json.load(f)
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except (ValueError, OSError) as e:
+        log(f'Settings: failed to load {SETTINGS_PATH}: {e}', level='WARN')
         return {}
 
 
 def _save_settings(settings):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(SETTINGS_PATH, 'w') as f:
-        json.dump(settings, f)
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(SETTINGS_PATH, 'w') as f:
+            json.dump(settings, f)
+    except OSError as e:
+        log(f'Settings: failed to save {SETTINGS_PATH}: {e}', level='ERROR')
 
 
 def get_run_on_startup():
@@ -458,7 +480,7 @@ def _delete_startup_value(name):
     except FileNotFoundError:
         pass  # already not registered
     except OSError as e:
-        print(f'[backend] Failed to unregister startup ({name}): {e}')
+        log(f'Failed to unregister startup ({name}): {e}')
 
 
 def enable_run_on_startup():
@@ -466,7 +488,7 @@ def enable_run_on_startup():
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY) as key:
             winreg.SetValueEx(key, STARTUP_NAME, 0, winreg.REG_SZ, _startup_command())
     except OSError as e:
-        print(f'[backend] Failed to register startup: {e}')
+        log(f'Failed to register startup: {e}')
     # Remove duplicate entries under older/alternate names so the app
     # auto-starts exactly once.
     for name in _STARTUP_ALIASES:
@@ -510,7 +532,7 @@ def _migrate_config():
                     os.replace(src, dst)
                 except OSError:
                     shutil.move(src, dst)  # cross-drive (install dir on another volume)
-                print(f'[backend] Migrated {name} -> {CONFIG_DIR}')
+                log(f'Migrated {name} -> {CONFIG_DIR}')
                 migrated = True
         if migrated:
             return
@@ -547,48 +569,62 @@ def _make_tray_icon():
 
 
 def _tray_show(icon, item):
+    log('Tray: Show clicked')
     if _bridge is not None:
         _bridge.show_requested.emit()
 
 
 def _tray_exit(icon, item):
+    log('Tray: Exit clicked')
     _state.shutdown_flag.set()
     _state.cancel.set()
     if _bridge is not None:
         _bridge.quit_requested.emit()
-    icon.stop()
+    try:
+        icon.stop()
+    except Exception:
+        log_exc('Tray: failed to stop icon')
 
 
 def _toggle_run_on_startup(icon, item):
-    enabled = not get_run_on_startup()
-    set_run_on_startup(enabled)
-    if enabled:
-        enable_run_on_startup()
-        print('[backend] Run on startup: enabled')
-    else:
-        disable_run_on_startup()
-        print('[backend] Run on startup: disabled')
+    try:
+        enabled = not get_run_on_startup()
+        set_run_on_startup(enabled)
+        if enabled:
+            enable_run_on_startup()
+            log('Run on startup: enabled')
+        else:
+            disable_run_on_startup()
+            log('Run on startup: disabled')
+    except Exception:
+        log_exc('Tray: failed to toggle run-on-startup')
 
 
 def _run_tray():
     global _tray_icon
-    _tray_icon = pystray.Icon(
-        'dockie',
-        _make_tray_icon(),
-        'Dockie',
-        menu=pystray.Menu(
-            pystray.MenuItem('Show', _tray_show, default=True),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(
-                'Run on startup',
-                _toggle_run_on_startup,
-                checked=lambda item: get_run_on_startup(),
+    try:
+        log('Tray: creating icon...')
+        _tray_icon = pystray.Icon(
+            'dockie',
+            _make_tray_icon(),
+            'Dockie',
+            menu=pystray.Menu(
+                pystray.MenuItem('Show', _tray_show, default=True),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem(
+                    'Run on startup',
+                    _toggle_run_on_startup,
+                    checked=lambda item: get_run_on_startup(),
+                ),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem('Exit', _tray_exit),
             ),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem('Exit', _tray_exit),
-        ),
-    )
-    _tray_icon.run_detached()
+        )
+        _tray_icon.run_detached()
+        log('Tray: running detached')
+    except Exception:
+        log_exc('Tray: failed to start')
+        _tray_icon = None
 
 
 # ── Indexing status window (PyQt6) ──
@@ -745,66 +781,90 @@ class IndexingWindow(QWidget):
 # ── Main ──
 def main():
     global _bridge
-    # If a newer release exists, download + relaunch it and exit so the
-    # current executable releases its file lock.
-    if Updater.check_and_update():
-        return
-    _migrate_config()
-    print('[backend] ========================================')
-    print('[backend] Dockie backend starting...')
-    print(f'[backend] Config dir: {CONFIG_DIR}')
-    print(f'[backend] DB path: {db.DB_PATH}')
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    sync_run_on_startup()
+    try:
+        # If a newer release exists, download + relaunch the installer and
+        # exit so the current executable releases its file lock.
+        if Updater.check_and_update():
+            return
+        _migrate_config()
+        log('========================================')
+        log('Dockie backend starting...')
+        log(f'Config dir: {CONFIG_DIR}')
+        log(f'DB path: {db.DB_PATH}')
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        sync_run_on_startup()
+    except Exception:
+        log_exc('Startup failed (config)')
 
     # Qt application (created first; its event loop runs on the main thread).
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
+    try:
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+    except Exception:
+        log_exc('Fatal: failed to create Qt application')
+        return
 
     # Scan + extract in background
-    print('[backend] Starting scan/extract pipeline...')
+    log('Starting scan/extract pipeline...')
     pipeline_thread = threading.Thread(target=pipeline, daemon=True)
     pipeline_thread.start()
 
     # Hotkey listener
-    print('[backend] Starting hotkey listener...')
+    log('Starting hotkey listener...')
     hotkey_listener = keyboard.Listener(on_press=_on_press)
     hotkey_listener.daemon = True
-    hotkey_listener.start()
-    print('[backend] Hotkey listener active (triple-tap F)')
+    try:
+        hotkey_listener.start()
+    except Exception:
+        log_exc('Hotkey listener failed to start')
+    if hotkey_listener.is_alive():
+        log('Hotkey listener active (triple-tap F)')
+    else:
+        log('Hotkey listener NOT running — triple-F disabled', level='WARN')
 
     # Start the file watcher once the pipeline finishes
     def _after_pipeline():
         global _watcher
-        pipeline_thread.join()
-        if not _state.cancel.is_set():
-            print('[backend] Pipeline done, starting file watcher...')
-            _watcher = start_watcher()
-            print('[backend] Ready — waiting for hotkey or shutdown')
+        try:
+            pipeline_thread.join()
+            if not _state.cancel.is_set():
+                log('Pipeline done, starting file watcher...')
+                _watcher = start_watcher()
+                log('Ready — waiting for hotkey or shutdown')
+        except Exception:
+            log_exc('Pipeline/watcher thread failed')
 
     threading.Thread(target=_after_pipeline, daemon=True).start()
 
-    print('[backend] ========================================')
+    log('========================================')
 
     # Indexing window (hidden until the tray "Show" item is clicked).
-    bridge = WindowBridge()
-    window = IndexingWindow()
-    bridge.show_requested.connect(window.show_and_raise)
-    bridge.quit_requested.connect(app.quit)
-    _bridge = bridge
-    print('[backend] Indexing window ready (hidden)')
+    try:
+        bridge = WindowBridge()
+        window = IndexingWindow()
+        bridge.show_requested.connect(window.show_and_raise)
+        bridge.quit_requested.connect(app.quit)
+        _bridge = bridge
+        log('Indexing window ready (hidden)')
+    except Exception:
+        log_exc('Indexing window failed to initialize')
+        _bridge = None
+        window = None
 
     # Start the tray (detached) so the main thread can run the Qt event loop.
     if _USE_TRAY:
         _run_tray()
-        print('[backend] System tray active')
-    else:
-        print('[backend] System tray unavailable — showing window directly')
+        log('System tray active')
+    elif window is not None:
+        log('System tray unavailable — showing window directly')
         window.show_and_raise()
 
-    app.exec()
+    try:
+        app.exec()
+    except Exception:
+        log_exc('Qt event loop crashed')
 
-    print('[backend] Shutting down...')
+    log('Shutting down...')
     _state.cancel.set()
     try:
         hotkey_listener.stop()
@@ -820,9 +880,10 @@ def main():
             _flutter_proc.terminate()
             _flutter_proc.wait(timeout=5)
         except Exception:
+            log_exc('Failed to terminate Flutter — killing')
             _flutter_proc.kill()
 
-    print('[backend] Done.')
+    log('Done.')
 
 
 if __name__ == '__main__':
