@@ -5,6 +5,7 @@ and PyQt indexing-status window. Launches the Flutter UI on triple-F.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,7 +36,9 @@ try:
 except ImportError:
     pass
 
-CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.dockie')
+# Data lives with the installed app (next to Dockie.exe); dev runs keep the
+# per-user .dockie dir. See db._data_dir().
+CONFIG_DIR = db.DATA_DIR
 SETTINGS_PATH = os.path.join(CONFIG_DIR, 'settings.json')
 
 if getattr(sys, 'frozen', False):
@@ -50,9 +53,12 @@ else:
 # When launched without a console (pythonw.exe, e.g. at login), redirect prints
 # to a log file so logging does not fail on a missing stdout/stderr.
 if sys.stdout is None or sys.stderr is None:
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    _log = open(os.path.join(CONFIG_DIR, 'dockie.log'), 'a', buffering=1,
-                encoding='utf-8', errors='replace')
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        _log = open(os.path.join(CONFIG_DIR, 'dockie.log'), 'a', buffering=1,
+                    encoding='utf-8', errors='replace')
+    except OSError:
+        _log = open(os.devnull, 'w')
     if sys.stdout is None:
         sys.stdout = _log
     if sys.stderr is None:
@@ -463,19 +469,32 @@ def sync_run_on_startup():
 
 
 def _migrate_config():
-    """Move data from the old .filefinder dir into .dockie on first run."""
-    old_dir = os.path.join(os.path.expanduser('~'), '.filefinder')
-    if not os.path.isdir(old_dir) or old_dir == CONFIG_DIR:
-        return
+    """Move app data into the current data dir on first run.
+
+    Covers the rebrand move (.filefinder -> .dockie) and the move of
+    packaged builds into the install dir. Older dirs are checked newest
+    first so the most recent data wins.
+    """
     if os.path.exists(os.path.join(CONFIG_DIR, 'index.db')):
-        return  # already migrated or fresh install
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    for name in ('index.db', 'index.db-wal', 'index.db-shm', 'settings.json'):
-        src = os.path.join(old_dir, name)
-        dst = os.path.join(CONFIG_DIR, name)
-        if os.path.exists(src) and not os.path.exists(dst):
-            os.replace(src, dst)
-            print(f'[backend] Migrated {name} -> {CONFIG_DIR}')
+        return  # already in place or fresh install
+    for old_dir in (os.path.join(os.path.expanduser('~'), '.dockie'),
+                    os.path.join(os.path.expanduser('~'), '.filefinder')):
+        if not os.path.isdir(old_dir) or os.path.abspath(old_dir) == os.path.abspath(CONFIG_DIR):
+            continue
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        migrated = False
+        for name in ('index.db', 'index.db-wal', 'index.db-shm', 'settings.json'):
+            src = os.path.join(old_dir, name)
+            dst = os.path.join(CONFIG_DIR, name)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    os.replace(src, dst)
+                except OSError:
+                    shutil.move(src, dst)  # cross-drive (install dir on another volume)
+                print(f'[backend] Migrated {name} -> {CONFIG_DIR}')
+                migrated = True
+        if migrated:
+            return
 
 
 # ── System tray ──
@@ -484,7 +503,17 @@ _bridge = None  # Qt signal bridge for tray -> window (set once in main())
 
 
 def _make_tray_icon():
-    """Generate a 64x64 file-finder icon (magnifying glass over document)."""
+    """Tray icon: robot.ico when available, else a generated fallback."""
+    if getattr(sys, 'frozen', False):
+        path = os.path.join(sys._MEIPASS, 'robot.ico')
+    else:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ico')
+    if os.path.exists(path):
+        try:
+            return Image.open(path).convert('RGBA')
+        except OSError:
+            pass
+    # Fallback: 64x64 file-finder icon (magnifying glass over a document).
     img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     # Document shape (light blue rounded rect)
