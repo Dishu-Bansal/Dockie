@@ -15,7 +15,7 @@ void main() async {
   WindowOptions windowOptions = WindowOptions(
     fullScreen: true,
     backgroundColor: Colors.transparent,
-    skipTaskbar: true,
+    // skipTaskbar: true,
     titleBarStyle: TitleBarStyle.hidden,
   );
 
@@ -28,7 +28,25 @@ void main() async {
 }
 
 // ── Path helpers ──
+// Test hook: overridden by widget_test.dart so the UI never touches the real
+// DB (Platform.environment is unmodifiable in the test harness).
+String dbPathOverride = '';
+
+// Resolve the DB where the backend actually keeps it:
+//  1. DOCKIE_DB_PATH — the authoritative path, when the backend passes it
+//  2. next to this exe — packaged installs keep the DB next to Dockie.exe
+//     (which sits beside dockie_ui.exe); see db._data_dir()
+//  3. ~/.dockie — dev runs and read-only install dirs (e.g. Program Files)
 String get _dbPath {
+  if (dbPathOverride.isNotEmpty) return dbPathOverride;
+  final fromEnv = Platform.environment['DOCKIE_DB_PATH'];
+  if (fromEnv != null && fromEnv.isNotEmpty) {
+    return fromEnv;
+  }
+  final exeDir = File(Platform.resolvedExecutable).parent.path;
+  if (File('$exeDir\\index.db').existsSync()) {
+    return '$exeDir\\index.db';
+  }
   final profile = Platform.environment['USERPROFILE'] ??
       Platform.environment['HOME'] ??
       '.';
@@ -403,37 +421,26 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     }
   }
 
-  Widget _buildStatusTile(Icon icon, String title, String subtitle) {
+  // Compact status block shown under the search bar while the index is still
+  // being built. Stays inside the panel so the spotlight look is preserved.
+  Widget _buildNotReadyStatus() {
     return Container(
-      width: MediaQuery.sizeOf(context).width * 0.35,
-      height: 50,
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       decoration: const BoxDecoration(
         color: Color(0xFFF8F8F8),
-        borderRadius:
-        BorderRadius.vertical(bottom: Radius.circular(7)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black26,
-            blurRadius: 10,
-            offset: Offset(0, 4),
-          ),
-        ],
+        borderRadius: BorderRadius.vertical(bottom: Radius.circular(7)),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
-        child: Column(
-          children: [
-            icon,
-            const SizedBox(height: 8),
-            Text(title,
-                style: const TextStyle(
-                    fontSize: 13, color: Colors.black54)),
-            const SizedBox(height: 4),
-            Text(subtitle,
-                style: const TextStyle(
-                    fontSize: 11, color: Colors.black38)),
-          ],
-        ),
+      child: Column(
+        children: [
+          const Icon(Icons.hourglass_empty, size: 18, color: Colors.grey),
+          const SizedBox(height: 8),
+          Text('Index not ready',
+              style: const TextStyle(fontSize: 13, color: Colors.black54)),
+          const SizedBox(height: 4),
+          Text('The PDF index is still being built. Please wait.',
+              style: const TextStyle(fontSize: 11, color: Colors.black38)),
+        ],
       ),
     );
   }
@@ -455,21 +462,10 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   @override
   Widget build(BuildContext context) {
-
-    if (!_dbReady) {
-      return _buildStatusTile(
-          const Icon(Icons.hourglass_empty, size: 18, color: Colors.grey),
-          'Index not ready',
-          'The PDF index is still being built. Please wait.');
-    }
-
-    // if (_results.isEmpty) {
-    //   return _buildStatusTile(
-    //       const Icon(Icons.search_off, size: 18, color: Colors.grey),
-    //       'No files found',
-    //       'Try a different search term.');
-    // }
-
+    // Always render the transparent spotlight overlay. Returning an opaque
+    // widget here (e.g. a bare status tile) makes the fullscreen window paint
+    // white instead of transparent. The status is shown as a compact panel
+    // under the search bar when the index isn't ready.
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: FadeTransition(
@@ -533,7 +529,9 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                                 ],
                               ),
                             ),
-                            if (_results.isNotEmpty) ...[
+                            if (!_dbReady)
+                              _buildNotReadyStatus()
+                            else if (_results.isNotEmpty) ...[
                               // Thin divider between search bar and results.
                               const Divider(height: 1, thickness: 1),
                               // ── Scrollable results list ──
