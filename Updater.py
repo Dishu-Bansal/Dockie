@@ -22,7 +22,7 @@ import urllib.request
 # ── Hardcoded configuration ──
 GITHUB_REPO = 'Dishu-Bansal/FileFinder'
 # Keep in sync with the release tag: tag 'v1.0.0' <-> VERSION '1.0.0'.
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 # Release assets are Inno Setup installers named dockie_setup_<version>.exe.
 RELEASE_ASSET_PREFIX = 'dockie_setup_'
 RELEASES_LATEST_URL = (
@@ -97,6 +97,13 @@ def _run_and_exit(path):
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
+    # Don't leak PyInstaller's onefile internals (_PYI_*) to the installer:
+    # it inherits our environment and hands it to the relaunched Dockie.exe,
+    # which can trip the bootloader's parent-process validation. See the
+    # pyinstaller<6.22.1 pin in requirements.txt.
+    for key in list(os.environ):
+        if key.startswith('_PYI_'):
+            os.environ.pop(key, None)
     silent_flags = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-']
     subprocess.Popen(
         [path] + silent_flags,

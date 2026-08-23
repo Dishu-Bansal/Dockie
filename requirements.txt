@@ -4,3 +4,8 @@ pynput>=1.7
 pystray>=0.19
 Pillow>=10.0
 PyQt6>=6.4
+# Build tool. 6.22.1+ added an unconditional onefile parent-process security
+# check that aborts Dockie when it is relaunched from the Inno installer after
+# an auto-update ("Security validation failure: parent process has different
+# executable!"). Pin below it until PyInstaller makes the check opt-outable.
+pyinstaller>=6.0,<6.22.1
