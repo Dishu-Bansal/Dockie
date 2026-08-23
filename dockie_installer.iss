@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "Dockie"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Bansia Labs"
 #define MyAppExeName "Dockie.exe"
 
@@ -26,9 +26,14 @@ ArchitecturesAllowed=x64compatible
 ; the 64-bit view of the registry.
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
+; The app creates this mutex (backend.py) so a reinstall/update can close a
+; running Dockie before replacing its files instead of failing on a lock.
+AppMutex=Dockie
+CloseApplications=yes
+RestartApplications=no
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
-OutputBaseFilename=dockie_setup_v100
+OutputBaseFilename=dockie_setup_v101
 SetupIconFile=D:\Projects\Automation\FileFinder\robot.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
@@ -60,5 +65,9 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; Auto-restart after install AND after a silent auto-update (no skipifsilent).
+; runasoriginaluser launches the app in the user's normal (non-elevated)
+; context instead of the elevated installer token — launching elevated is what
+; produced the security/validation error during updates.
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall runasoriginaluser
 
