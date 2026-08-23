@@ -431,11 +431,60 @@ def launch_flutter():
                 log(f'flutter: {line.rstrip()}')
         threading.Thread(target=_pipe_output, daemon=True).start()
         _flutter_proc = proc
+        # Fallback focus: the UI is launched by us rather than by the user's
+        # input, so Windows may refuse to activate it (the foreground lock)
+        # and typing would go nowhere until the user clicks the search bar.
+        # The backend DID receive the physical triple-Ctrl via the pynput
+        # hook, which qualifies it to set the foreground window.
+        threading.Thread(target=_focus_ui_window, daemon=True).start()
         log(f'Flutter launched (pid={proc.pid})')
         return proc
     except Exception:
         log_exc(f'Failed to launch Flutter: {FLUTTER_EXE}')
         return None
+
+
+def _focus_ui_window():
+    """Bring the Flutter overlay to the foreground once it appears.
+
+    Best-effort only: waits for the UI window, then calls SetForegroundWindow
+    on it. The backend process received the last input event (the hotkey), so
+    Windows allows it to set the foreground window even though dockie_ui.exe
+    is a background-launched process.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL('user32')
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+        user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
+        user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+
+        FLUTTER_CLASS = 'FLUTTER_RUNNER_WIN32_WINDOW'
+        found = []
+
+        @WNDENUMPROC
+        def _enum(hwnd, _lparam):
+            buf = ctypes.create_unicode_buffer(256)
+            if (user32.GetClassNameW(hwnd, buf, 256)
+                    and buf.value == FLUTTER_CLASS
+                    and user32.IsWindowVisible(hwnd)):
+                found.append(hwnd)
+            return True
+
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            user32.EnumWindows(_enum, 0)
+            if found:
+                user32.SetForegroundWindow(found[0])
+                log(f'Foreground window set to Flutter UI (hwnd={found[0]:#x})')
+                return
+            time.sleep(0.25)
+    except Exception:
+        pass  # best-effort only
 
 
 # ── Startup registration ──

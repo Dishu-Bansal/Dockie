@@ -29,6 +29,14 @@ void main() async {
       await windowManager.setAlwaysOnTop(true);
       await windowManager.show();
       _log('Window shown (always-on-top)');
+      // A window shown by a background-launched process is not automatically
+      // activated (Windows foreground lock), so keyboard input would go
+      // nowhere until the user clicks the search bar. Explicitly grab OS
+      // focus, retrying in case the first SetForegroundWindow is refused.
+      for (var attempt = 0; attempt < 3; attempt++) {
+        await windowManager.focus();
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
     });
   } catch (e) {
     _log('waitUntilReadyToShow failed: $e', level: 'ERROR');
@@ -105,7 +113,8 @@ class SearchOverlay extends StatefulWidget {
   State<SearchOverlay> createState() => _SearchOverlayState();
 }
 
-class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProviderStateMixin {
+class _SearchOverlayState extends State<SearchOverlay>
+    with SingleTickerProviderStateMixin, WindowListener {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _overlayFocusNode = FocusNode();
   late final FocusNode _textFocusNode = FocusNode(
@@ -157,13 +166,25 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
       _textFocusNode.requestFocus();
       _animationController.forward();
     });
+    windowManager.addListener(this);
 
     _initDb();
     _searchController.addListener(_onSearchChanged);
   }
 
   @override
+  void onWindowFocus() {
+    // The OS may activate the window after the first frame has already run
+    // (typical for a background-launched process), so re-grab the text
+    // field's focus whenever the window actually gains focus.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _textFocusNode.requestFocus();
+    });
+  }
+
+  @override
   void dispose() {
+    windowManager.removeListener(this);
     _animationController.dispose();
     _searchController.dispose();
     _overlayFocusNode.dispose();
