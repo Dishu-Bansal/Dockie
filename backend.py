@@ -526,6 +526,23 @@ def sync_run_on_startup():
         disable_run_on_startup()
 
 
+def _create_update_mutex():
+    """Create the named mutex the Inno installer waits on (AppMutex=Dockie).
+
+    With CloseApplications=yes in the .iss, a reinstall/update closes a
+    running Dockie before replacing its files instead of hitting a lock.
+    The HANDLE is intentionally kept for the process lifetime."""
+    global _update_mutex
+    try:
+        import ctypes
+        _update_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Dockie')
+    except Exception:
+        _update_mutex = None
+
+
+_update_mutex = None
+
+
 def _migrate_config():
     """Move app data into the current data dir on first run.
 
@@ -810,6 +827,7 @@ def main():
         if Updater.check_and_update():
             return
         _migrate_config()
+        _create_update_mutex()
         log('========================================')
         log('Dockie backend starting...')
         log(f'Config dir: {CONFIG_DIR}')

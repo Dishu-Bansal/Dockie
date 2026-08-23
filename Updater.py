@@ -22,7 +22,7 @@ import urllib.request
 # ── Hardcoded configuration ──
 GITHUB_REPO = 'Dishu-Bansal/FileFinder'
 # Keep in sync with the release tag: tag 'v1.0.0' <-> VERSION '1.0.0'.
-VERSION = '1.0.0'
+VERSION = '1.0.2'
 # Release assets are Inno Setup installers named dockie_setup_<version>.exe.
 RELEASE_ASSET_PREFIX = 'dockie_setup_'
 RELEASES_LATEST_URL = (
@@ -62,9 +62,9 @@ def _latest_release():
 
 
 def _asset_name(tag):
-    """'v1.0.1' -> 'dockie_setup_1.0.1.exe'."""
-    version = '.'.join(str(p) for p in _version_tuple(tag))
-    return f'{RELEASE_ASSET_PREFIX}{version}.exe'
+    """'v1.0.1' -> 'dockie_setup_v101.exe' (matches the .iss OutputBaseFilename)."""
+    version = ''.join(str(p) for p in _version_tuple(tag))
+    return f'{RELEASE_ASSET_PREFIX}v{version}.exe'
 
 
 def _find_asset(release, name):
@@ -85,14 +85,21 @@ def _download_path(asset_name):
 
 
 def _run_and_exit(path):
-    """Launch the installer in a new, detached process, then kill this
-    process so the running executable releases its file lock and the
-    installer can replace it."""
+    """Launch the installer in a new, detached, fully silent process, then
+    kill this process so the running executable releases its file lock and
+    the installer can replace it.
+
+    /VERYSILENT + /SUPPRESSMSGBOXES make the Inno wizard run with no
+    prompts (no "Create a desktop shortcut?" page, no questions); /NORESTART
+    stops it from rebooting; /SP- skips the "This will install... continue?"
+    prompt. Without these flags an auto-update would pop the interactive
+    wizard on the user's screen."""
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
+    silent_flags = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-']
     subprocess.Popen(
-        [path],
+        [path] + silent_flags,
         creationflags=_CREATE_NO_WINDOW | _DETACHED_PROCESS,
         startupinfo=startupinfo,
         close_fds=True,

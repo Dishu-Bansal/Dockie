@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "Dockie"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.2"
 #define MyAppPublisher "Bansia Labs"
 #define MyAppExeName "Dockie.exe"
 
@@ -26,9 +26,14 @@ ArchitecturesAllowed=x64compatible
 ; the 64-bit view of the registry.
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
+; The app creates this mutex (backend.py) so a reinstall/update can close a
+; running Dockie before replacing its files instead of failing on a lock.
+AppMutex=Dockie
+CloseApplications=yes
+RestartApplications=no
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
-OutputBaseFilename=dockie_setup_v100
+OutputBaseFilename=dockie_setup_v102
 SetupIconFile=D:\Projects\Automation\FileFinder\robot.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
