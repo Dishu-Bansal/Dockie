@@ -1,7 +1,7 @@
 """
 Dockie backend — scanning, extraction, file watching, hotkey, system tray,
-and PyQt indexing-status window. Launches the Flutter UI on triple-Ctrl
-(left or right).
+and PyQt indexing-status window. Launches the Python search overlay (ui.py)
+on triple-Ctrl (left or right).
 """
 
 import json
@@ -50,14 +50,15 @@ SETTINGS_PATH = os.path.join(CONFIG_DIR, 'settings.json')
 LOG_PATH = os.path.join(CONFIG_DIR, 'dockie.log')
 applog.configure(LOG_PATH)
 
+# Path to the Python search overlay (ui.py). Source runs use the current
+# interpreter (the backend itself requires PyQt6, so sys.executable has it).
+# Packaged (frozen) builds run from a single exe with no interpreter, so the
+# overlay is shipped as a sibling dockie_ui.exe built from ui.py (PyInstaller).
+UI_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui.py')
 if getattr(sys, 'frozen', False):
-    # Installed layout: Inno Setup installs dockie_ui.exe next to Dockie.exe.
-    FLUTTER_EXE = os.path.join(os.path.dirname(sys.executable), 'dockie_ui.exe')
+    UI_EXE = os.path.join(os.path.dirname(sys.executable), 'dockie_ui.exe')
 else:
-    # Source layout (dev): dockie_ui\build\windows\x64\runner\Release\dockie_ui.exe
-    FLUTTER_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               'dockie_ui', 'build', 'windows', 'x64',
-                               'runner', 'Release', 'dockie_ui.exe')
+    UI_EXE = None
 
 # When launched without a console (pythonw.exe, e.g. at login), redirect
 # stray prints (third-party output, our own logs) into dockie.log so
@@ -396,49 +397,55 @@ def _on_press(key):
 
     if len(_last_ctrl_times) >= 3:
         _last_ctrl_times.clear()
-        log('Hotkey: triple-Ctrl pressed, launching Flutter UI')
-        launch_flutter()
+        log('Hotkey: triple-Ctrl pressed, launching search UI')
+        launch_ui()
 
-# ── Flutter process management ──
-_flutter_proc = None  # process handle for the on-demand Flutter UI
+# ── Search overlay process management ──
+_ui_proc = None  # process handle for the on-demand search overlay
 
 
-def launch_flutter():
-    global _flutter_proc
-    if not os.path.exists(FLUTTER_EXE):
-        log(f'Flutter exe NOT FOUND at: {FLUTTER_EXE}')
-        return None
-    if _flutter_proc is not None and _flutter_proc.poll() is None:
-        log('Flutter already running, skipping launch')
-        return _flutter_proc
+def launch_ui():
+    global _ui_proc
+    if _ui_proc is not None and _ui_proc.poll() is None:
+        log('Search UI already running, skipping launch')
+        return _ui_proc
+    if getattr(sys, 'frozen', False):
+        if not os.path.exists(UI_EXE):
+            log(f'UI exe NOT FOUND at: {UI_EXE}')
+            return None
+        cmd = [UI_EXE]
+    else:
+        if not os.path.exists(UI_SCRIPT):
+            log(f'UI script NOT FOUND at: {UI_SCRIPT}')
+            return None
+        cmd = [sys.executable, UI_SCRIPT]
     try:
-        log(f'Launching Flutter: {FLUTTER_EXE}')
+        log(f'Launching search UI: {" ".join(cmd)}')
         # Tell the UI which DB to read — packaged builds may store it next to
         # the exe (see db._data_dir()) rather than under ~/.dockie.
         env = dict(os.environ)
         env['DOCKIE_DB_PATH'] = db.DB_PATH
-        log(f'Flutter DB path passed: {db.DB_PATH}')
+        log(f'UI DB path passed: {db.DB_PATH}')
         proc = subprocess.Popen(
-            [FLUTTER_EXE],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             env=env,
         )
-        # Pipe Flutter output to our stdout in a background thread
+        # Pipe UI output to our log in a background thread
         def _pipe_output():
             for line in proc.stdout:
-                log(f'flutter: {line.rstrip()}')
+                log(f'ui: {line.rstrip()}')
         threading.Thread(target=_pipe_output, daemon=True).start()
-        _flutter_proc = proc
-        log(f'Flutter launched (pid={proc.pid})')
+        _ui_proc = proc
+        log(f'Search UI launched (pid={proc.pid})')
         return proc
     except Exception:
-        log_exc(f'Failed to launch Flutter: {FLUTTER_EXE}')
+        log_exc(f'Failed to launch search UI: {cmd}')
         return None
-
-
 # ── Startup registration ──
+
 STARTUP_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_NAME = 'Dockie'
 # Older/installer names that also register the app for auto-start. The tray
@@ -918,13 +925,13 @@ def main():
             _tray_icon.stop()
         except Exception:
             pass
-    if _flutter_proc:
+    if _ui_proc:
         try:
-            _flutter_proc.terminate()
-            _flutter_proc.wait(timeout=5)
+            _ui_proc.terminate()
+            _ui_proc.wait(timeout=5)
         except Exception:
-            log_exc('Failed to terminate Flutter — killing')
-            _flutter_proc.kill()
+            log_exc('Failed to terminate search UI - killing')
+            _ui_proc.kill()
 
     log('Done.')
 

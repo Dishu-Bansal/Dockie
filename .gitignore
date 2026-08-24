@@ -4,3 +4,6 @@ pdfs_found.txt
 *.db
 build/
 dist/
+# UI development preview artifacts (not part of the app)
+_ui_preview.py
+_ui_shot_*.png
