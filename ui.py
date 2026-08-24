@@ -28,6 +28,7 @@ from PyQt6.QtCore import (
     QPointF,
     QRectF,
     QSize,
+    pyqtSignal,
 )
 from PyQt6.QtGui import (
     QColor,
@@ -788,8 +789,11 @@ class _SearchEdit(QLineEdit):
 # ---------------------------------------------------------------------------
 
 class SearchOverlay(QWidget):
+    closed = pyqtSignal()  # emitted when the overlay closes (any dismissal)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._quit_on_close = True  # standalone: closing quits the app
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint)
@@ -845,20 +849,62 @@ class SearchOverlay(QWidget):
 
     # --- lifecycle ---
 
+    def set_quit_on_close(self, quit_app: bool):
+        """When embedded in the backend (in-process), closing the overlay
+        must only hide it — never quit the application that owns it."""
+        self._quit_on_close = quit_app
+
     def close_app(self):
         print('Closing overlay')
         self.close()
-        QApplication.instance().quit()
+        if self._quit_on_close:
+            QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        self.closed.emit()
 
     def show_with_fade(self):
         self.showFullScreen()
-        self.panel.edit.setFocus()
+        self._grab_focus()
+        # Re-grab once the window is fully mapped (some platforms only
+        # activate after the first pass through the event loop).
+        QTimer.singleShot(0, self._grab_focus)
         self._fade = QPropertyAnimation(self, b'windowOpacity', self)
         self._fade.setDuration(500)
         self._fade.setStartValue(0.0)
         self._fade.setEndValue(1.0)
         self._fade.setEasingCurve(QEasingCurve.Type.InCubic)
         self._fade.start()
+
+    def _grab_focus(self):
+        self.raise_()
+        self.activateWindow()
+        self.panel.edit.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        if sys.platform == 'win32':
+            self._force_windows_foreground()
+
+    def _force_windows_foreground(self):
+        """Give the overlay the OS input focus.
+
+        The foreground lock normally stops background windows from taking
+        focus, but this process owns the low-level keyboard hook (pynput)
+        that just handled the summon keystrokes, so SetForegroundWindow is
+        permitted. The synthetic Alt tap additionally clears the
+        foreground-lock timeout for edge cases (e.g. a tray app that has
+        never been foreground).
+        """
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            if not user32.SetForegroundWindow(hwnd):
+                user32.keybd_event(0x12, 0, 0, 0)  # VK_MENU down
+                user32.keybd_event(0x12, 0, 2, 0)  # VK_MENU up
+                user32.SetForegroundWindow(hwnd)
+                user32.BringWindowToTop(hwnd)
+        except Exception:
+            pass
 
     # --- search ---
 

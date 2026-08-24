@@ -46,8 +46,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "D:\Projects\Automation\FileFinder\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-; The search overlay runs inside the same Dockie.exe (launched with --ui),
-; so no second executable is installed.
+; The search overlay is built in-process by Dockie.exe, so only one
+; executable is installed.
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

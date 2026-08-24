@@ -1,9 +1,13 @@
 """Dockie entry point.
-Dispatches between the two roles the single packaged Dockie.exe serves:
-the backend (default) and the on-demand search overlay (--ui), which the
-backend spawns as a second instance of the same executable.
+
+Runs the backend by default. The packaged exe also accepts --ui to launch
+the search overlay standalone (manual/debug use); the backend itself builds
+the overlay in-process, so the hotkey path never spawns a second process.
 """
+
 import sys
+
+
 def main():
     if '--ui' in sys.argv:
         import ui
@@ -13,6 +17,8 @@ def main():
         return ui.main()
     from backend import main as backend_main
     return backend_main()
+
+
 if __name__ == '__main__':
     try:
         main()
