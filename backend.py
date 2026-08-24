@@ -52,13 +52,13 @@ applog.configure(LOG_PATH)
 
 # Path to the Python search overlay (ui.py). Source runs use the current
 # interpreter (the backend itself requires PyQt6, so sys.executable has it).
-# Packaged (frozen) builds run from a single exe with no interpreter, so the
-# overlay is shipped as a sibling dockie_ui.exe built from ui.py (PyInstaller).
+# Packaged (frozen) builds relaunch the same Dockie.exe with --ui, which
+# indexer.py dispatches to the overlay.
 UI_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui.py')
 if getattr(sys, 'frozen', False):
-    UI_EXE = os.path.join(os.path.dirname(sys.executable), 'dockie_ui.exe')
+    UI_ARGS = ['--ui']
 else:
-    UI_EXE = None
+    UI_ARGS = None
 
 # When launched without a console (pythonw.exe, e.g. at login), redirect
 # stray prints (third-party output, our own logs) into dockie.log so
@@ -410,10 +410,7 @@ def launch_ui():
         log('Search UI already running, skipping launch')
         return _ui_proc
     if getattr(sys, 'frozen', False):
-        if not os.path.exists(UI_EXE):
-            log(f'UI exe NOT FOUND at: {UI_EXE}')
-            return None
-        cmd = [UI_EXE]
+        cmd = [sys.executable] + UI_ARGS
     else:
         if not os.path.exists(UI_SCRIPT):
             log(f'UI script NOT FOUND at: {UI_SCRIPT}')
