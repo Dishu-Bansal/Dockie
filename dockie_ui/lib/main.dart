@@ -1,11 +1,12 @@
 import 'dart:async';
-import 'dart:ui';
+import 'dart:ffi';
 import 'dart:io';
+import 'dart:math';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:sqlite3/sqlite3.dart' hide Row;
-import 'dart:math';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,14 +28,106 @@ void main() async {
   try {
     windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.setAlwaysOnTop(true);
-      await windowManager.show();
-      _log('Window shown (always-on-top)');
+      // The window takes the foreground when it is created, and hiding a
+      // never-activated window does not release it — the hidden overlay would
+      // swallow the user's keystrokes until something else took focus. Fully
+      // activate it (show + SetForegroundWindow, all synchronous via FFI) and
+      // then hide it; hiding an activated window returns focus to the
+      // previously active one. The overlay is transparent, so the brief show
+      // is invisible.
+      await _releaseStartupFocus();
+      await windowManager.hide();
+      _log('Window created (starts hidden)');
     });
   } catch (e) {
     _log('waitUntilReadyToShow failed: $e', level: 'ERROR');
   }
 
   runApp(SpotlightApp());
+  _startHotkeyWatcher();
+}
+
+// ── Triple-Ctrl hotkey (dart:ffi only — no runner changes) ──
+// Triple-Ctrl cannot be expressed as a RegisterHotKey, and a low-level
+// keyboard hook's callback cannot run Dart code synchronously (the isolate
+// is parked in the runner's GetMessage loop while hooks fire). So we poll
+// GetAsyncKeyState on a short timer instead: it reports the system-global
+// async key state from any process, including a background one.
+//
+// The Windows foreground lock only lets a process activate a window if it
+// received the "last input event". Polling does not grant that either, so
+// when the hotkey fires we inject a benign F24 press via keybd_event:
+// injected input marks the injecting process as the input recipient, which
+// makes the upcoming SetForegroundWindow (windowManager.focus()) succeed
+// even though the UI is a background-launched process.
+final DynamicLibrary _user32 = DynamicLibrary.open('user32.dll');
+
+const int _vkControl = 0x11;
+const int _vkLControl = 0xA2;
+const int _vkRControl = 0xA3;
+const int _vkF24 = 0x87;
+const int _keyEventFKeyUp = 0x0002;
+
+final _getAsyncKeyState = _user32.lookupFunction<Int16 Function(Int32), int Function(int)>(
+    'GetAsyncKeyState');
+final _keybdEvent = _user32.lookupFunction<
+    Void Function(Uint8, Uint8, Uint32, UintPtr),
+    void Function(int, int, int, int)>('keybd_event');
+final _setForegroundWindow = _user32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+    'SetForegroundWindow');
+final _showWindow = _user32.lookupFunction<
+    Int32 Function(IntPtr, Int32),
+    int Function(int, int)>('ShowWindow');
+
+Future<void> _releaseStartupFocus() async {
+  final hwnd = await windowManager.getId();
+  if (hwnd == 0) return;
+  _showWindow(hwnd, 5); // SW_SHOW
+  _setForegroundWindow(hwnd);
+  _showWindow(hwnd, 0); // SW_HIDE
+}
+
+int _ctrlPresses = 0;
+int _lastCtrlMs = 0;
+bool _prevCtrlDown = false;
+bool _uiReady = false;
+void Function()? _onHotkeyCallback;
+
+void _startHotkeyWatcher() {
+  // Not stored: an active periodic timer is kept alive by the event loop.
+  Timer.periodic(const Duration(milliseconds: 10), (_) => _pollKeys());
+}
+
+void _pollKeys() {
+  final state = _getAsyncKeyState(_vkLControl) |
+      _getAsyncKeyState(_vkRControl) |
+      _getAsyncKeyState(_vkControl);
+  final down = (state & 0x8000) != 0;
+  // "Pressed since last call" bit: catches a tap so fast it happens entirely
+  // between two polls.
+  final tapped = (state & 0x0001) != 0;
+  final now = DateTime.now().millisecondsSinceEpoch;
+  var counted = false;
+  if (tapped) {
+    _countCtrlPress(now);
+    counted = true;
+  }
+  if (!counted && down && !_prevCtrlDown) {
+    _countCtrlPress(now);
+  }
+  _prevCtrlDown = down;
+}
+
+void _countCtrlPress(int nowMs) {
+  if (nowMs - _lastCtrlMs > 1000) _ctrlPresses = 0;
+  _ctrlPresses++;
+  _lastCtrlMs = nowMs;
+  if (_ctrlPresses >= 3) {
+    _ctrlPresses = 0;
+    if (_uiReady) {
+      _onHotkeyCallback?.call();
+    }
+  }
 }
 
 // ── Logging ──
@@ -105,7 +198,8 @@ class SearchOverlay extends StatefulWidget {
   State<SearchOverlay> createState() => _SearchOverlayState();
 }
 
-class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProviderStateMixin {
+class _SearchOverlayState extends State<SearchOverlay>
+    with SingleTickerProviderStateMixin, WindowListener {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _overlayFocusNode = FocusNode();
   late final FocusNode _textFocusNode = FocusNode(
@@ -154,16 +248,45 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     );
     // Request focus so that the text field is active immediately.
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _uiReady = true;
       _textFocusNode.requestFocus();
-      _animationController.forward();
     });
+    _onHotkeyCallback = _showAndFocus;
+    windowManager.addListener(this);
 
     _initDb();
     _searchController.addListener(_onSearchChanged);
   }
 
+  // Triple-Ctrl fired in the low-level keyboard hook (main.dart top level).
+  // The process owns the input event (it hooked it and injected F24 to gain
+  // the foreground lock), so showing + focusing is a legitimate activation.
+  Future<void> _showAndFocus() async {
+    _log('Hotkey: showing overlay');
+    _searchController.clear();
+    // Grant the foreground lock before show/focus (see the hook comment).
+    _keybdEvent(_vkF24, 0, 0, 0);
+    _keybdEvent(_vkF24, 0, _keyEventFKeyUp, 0);
+    await windowManager.show();
+    await windowManager.focus();
+    _animationController.forward(from: 0);
+    _textFocusNode.requestFocus();
+    _log('Overlay shown + focused');
+  }
+
+  @override
+  void onWindowFocus() {
+    // Activation can land a frame after show(); re-grab the field's focus
+    // whenever the window actually gains focus.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _textFocusNode.requestFocus();
+    });
+  }
+
   @override
   void dispose() {
+    _onHotkeyCallback = null;
+    windowManager.removeListener(this);
     _animationController.dispose();
     _searchController.dispose();
     _overlayFocusNode.dispose();
@@ -174,10 +297,11 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     super.dispose();
   }
 
-  // Close the app. The Python backend relaunches it on the next Alt+Space.
+  // Dismiss the overlay. The app keeps running hidden; triple-Ctrl brings it
+  // back.
   void _closeApp() {
-    _log('Closing overlay');
-    exit(0);
+    _log('Hiding overlay');
+    windowManager.hide();
   }
 
   // ── Highlight helper ──
@@ -366,11 +490,9 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
   // ── Keyboard ──
   static final Set<LogicalKeyboardKey> _dismissKeys = {
-    // Modifiers (Alt excluded on purpose: Alt+Space is the summon hotkey and
-    // must not dismiss the overlay while the chord is still being typed).
-    LogicalKeyboardKey.control,
-    LogicalKeyboardKey.controlLeft,
-    LogicalKeyboardKey.controlRight,
+    // Ctrl is deliberately absent: triple-Ctrl is the summon hotkey, so a
+    // Ctrl press must never dismiss the overlay. Alt is absent too (it is
+    // part of other hotkeys the user may be typing).
     LogicalKeyboardKey.meta,
     LogicalKeyboardKey.metaLeft,
     LogicalKeyboardKey.metaRight,

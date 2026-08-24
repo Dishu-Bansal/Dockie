@@ -15,8 +15,6 @@ import winreg
 
 import Updater
 
-from pynput import keyboard
-
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -370,37 +368,12 @@ def start_watcher():
         return None
 
 
-# ── Hotkey (triple-Ctrl) ──
-# Three Ctrl presses (left or right) within one second summon the overlay.
-# No OS-level suppression is needed (unlike Alt+Space, Ctrl has no system
-# side-effect such as the window system menu).
-_CTRL_VKS = {0x11, 0xA2, 0xA3}  # VK_CONTROL / VK_LCONTROL / VK_RCONTROL
-_last_ctrl_times: list[float] = []
-_hotkey_listener = None
-
-
-def _on_press(key):
-    global _last_ctrl_times
-    # pynput exposes the VK on KeyCode directly but on Key enum members only
-    # via .value.vk (e.g. Key.ctrl_l is <162> with key.vk == None).
-    vk = getattr(key, 'vk', None)
-    if vk is None:
-        vk = getattr(getattr(key, 'value', None), 'vk', None)
-    if vk not in _CTRL_VKS:
-        _last_ctrl_times.clear()  # any other key resets the triple-Ctrl sequence
-        return
-
-    now = time.time()
-    _last_ctrl_times.append(now)
-    _last_ctrl_times = [t for t in _last_ctrl_times if t > now - 1.0]
-
-    if len(_last_ctrl_times) >= 3:
-        _last_ctrl_times.clear()
-        log('Hotkey: triple-Ctrl pressed, launching Flutter UI')
-        launch_flutter()
-
 # ── Flutter process management ──
-_flutter_proc = None  # process handle for the on-demand Flutter UI
+# The Flutter UI is a persistent, hidden process that owns the triple-Ctrl
+# hotkey itself (GetAsyncKeyState polling in main.dart — no runner changes).
+# The backend only makes sure it is running: launch once at startup, and a
+# watchdog relaunches it if it dies. It is never spawned per-hotkey.
+_flutter_proc = None  # process handle for the persistent Flutter UI
 
 
 def launch_flutter():
@@ -832,19 +805,24 @@ def main():
     pipeline_thread = threading.Thread(target=pipeline, daemon=True)
     pipeline_thread.start()
 
-    # Hotkey: triple-Ctrl (left or right) via a pynput listener
-    log('Starting hotkey listener (triple-Ctrl)...')
-    global _hotkey_listener
-    _hotkey_listener = keyboard.Listener(on_press=_on_press)
-    _hotkey_listener.daemon = True
-    try:
-        _hotkey_listener.start()
-    except Exception:
-        log_exc('Hotkey listener failed to start')
-    if _hotkey_listener.is_alive():
-        log('Hotkey listener active (triple-Ctrl)')
-    else:
-        log('Hotkey listener NOT running - triple-Ctrl disabled', level='WARN')
+    # The persistent Flutter UI owns the triple-Ctrl hotkey; launch it hidden
+    # and keep it alive with a watchdog.
+    log('Launching persistent Flutter UI (hidden)...')
+    launch_flutter()
+
+    def _ui_watchdog():
+        while True:
+            time.sleep(10)
+            try:
+                proc = _flutter_proc
+                if proc is None or proc.poll() is not None:
+                    log('Flutter UI not running, relaunching')
+                    launch_flutter()
+            except Exception:
+                pass  # best-effort only
+
+    threading.Thread(target=_ui_watchdog, daemon=True).start()
+    log('Flutter UI watchdog active')
 
     # Start the file watcher once the pipeline finishes
     def _after_pipeline():
@@ -854,7 +832,7 @@ def main():
             if not _state.cancel.is_set():
                 log('Pipeline done, starting file watcher...')
                 _watcher = start_watcher()
-                log('Ready — waiting for hotkey or shutdown')
+                log('Ready — triple-Ctrl (handled by UI) or shutdown')
         except Exception:
             log_exc('Pipeline/watcher thread failed')
 
@@ -890,11 +868,6 @@ def main():
 
     log('Shutting down...')
     _state.cancel.set()
-    try:
-        if _hotkey_listener is not None:
-            _hotkey_listener.stop()
-    except Exception:
-        pass
     if _tray_icon is not None:
         try:
             _tray_icon.stop()
