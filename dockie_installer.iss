@@ -46,18 +46,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "D:\Projects\Automation\FileFinder\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Projects\Automation\FileFinder\dist\dockie_ui.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Projects\Automation\FileFinder\dist\flutter_windows.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Projects\Automation\FileFinder\dist\screen_retriever_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Projects\Automation\FileFinder\dist\sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Projects\Automation\FileFinder\dist\sqlite3_flutter_libs_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Projects\Automation\FileFinder\dist\window_manager_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "D:\Projects\Automation\FileFinder\dist\native_assets.json"; DestDir: "{app}"; Flags: ignoreversion
-; The Flutter engine resolves its assets (flutter_assets, app.so, icudtl.dat)
-; relative to <exe dir>\data\, so the data folder must keep its subfolder.
-; A bare "dist\data\*" -> "{app}" would install these files FLAT and make
-; dockie_ui.exe crash instantly on launch.
-Source: "D:\Projects\Automation\FileFinder\dist\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The search overlay is built in-process by Dockie.exe, so only one
+; executable is installed.
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

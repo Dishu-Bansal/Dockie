@@ -1,13 +1,12 @@
 """
 Dockie backend — scanning, extraction, file watching, hotkey, system tray,
-and PyQt indexing-status window. Launches the Flutter UI on triple-Ctrl
-(left or right).
+and PyQt indexing-status window. Launches the Python search overlay (ui.py)
+on triple-Ctrl (left or right).
 """
 
 import json
 import os
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -49,15 +48,6 @@ CONFIG_DIR = db.DATA_DIR
 SETTINGS_PATH = os.path.join(CONFIG_DIR, 'settings.json')
 LOG_PATH = os.path.join(CONFIG_DIR, 'dockie.log')
 applog.configure(LOG_PATH)
-
-if getattr(sys, 'frozen', False):
-    # Installed layout: Inno Setup installs dockie_ui.exe next to Dockie.exe.
-    FLUTTER_EXE = os.path.join(os.path.dirname(sys.executable), 'dockie_ui.exe')
-else:
-    # Source layout (dev): dockie_ui\build\windows\x64\runner\Release\dockie_ui.exe
-    FLUTTER_EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               'dockie_ui', 'build', 'windows', 'x64',
-                               'runner', 'Release', 'dockie_ui.exe')
 
 # When launched without a console (pythonw.exe, e.g. at login), redirect
 # stray prints (third-party output, our own logs) into dockie.log so
@@ -396,49 +386,52 @@ def _on_press(key):
 
     if len(_last_ctrl_times) >= 3:
         _last_ctrl_times.clear()
-        log('Hotkey: triple-Ctrl pressed, launching Flutter UI')
-        launch_flutter()
+        log('Hotkey: triple-Ctrl pressed, launching search UI')
+        launch_ui()
 
-# ── Flutter process management ──
-_flutter_proc = None  # process handle for the on-demand Flutter UI
+# ── Search overlay (in-process) ──
+# The overlay is built directly in this process, on the Qt main thread.
+# Spawning a separate UI process trips Windows' foreground lock, so the
+# search field never receives focus; this process holds the low-level
+# keyboard hook (pynput), which grants it the right to take the foreground.
+_ui_overlay = None  # the visible SearchOverlay widget, if any
 
 
-def launch_flutter():
-    global _flutter_proc
-    if not os.path.exists(FLUTTER_EXE):
-        log(f'Flutter exe NOT FOUND at: {FLUTTER_EXE}')
-        return None
-    if _flutter_proc is not None and _flutter_proc.poll() is None:
-        log('Flutter already running, skipping launch')
-        return _flutter_proc
+def launch_ui():
+    """Request the search overlay on the Qt main thread (called from the
+    pynput listener thread — Qt widgets must live on the main thread)."""
+    if _bridge is None:
+        log('Search UI not available yet (Qt bridge not ready)')
+        return
+    _bridge.ui_requested.emit()
+
+
+def _show_search_ui():
+    """Build and show the overlay in-process (runs on the Qt main thread)."""
+    global _ui_overlay
+    if _ui_overlay is not None and _ui_overlay.isVisible():
+        log('Search UI already open, skipping launch')
+        return
     try:
-        log(f'Launching Flutter: {FLUTTER_EXE}')
-        # Tell the UI which DB to read — packaged builds may store it next to
-        # the exe (see db._data_dir()) rather than under ~/.dockie.
-        env = dict(os.environ)
-        env['DOCKIE_DB_PATH'] = db.DB_PATH
-        log(f'Flutter DB path passed: {db.DB_PATH}')
-        proc = subprocess.Popen(
-            [FLUTTER_EXE],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=env,
-        )
-        # Pipe Flutter output to our stdout in a background thread
-        def _pipe_output():
-            for line in proc.stdout:
-                log(f'flutter: {line.rstrip()}')
-        threading.Thread(target=_pipe_output, daemon=True).start()
-        _flutter_proc = proc
-        log(f'Flutter launched (pid={proc.pid})')
-        return proc
+        import ui as ui_module
+        overlay = ui_module.SearchOverlay()
+        overlay.set_quit_on_close(False)  # closing must not quit the backend
+        overlay.closed.connect(_overlay_closed)
+        overlay.show_with_fade()
+        _ui_overlay = overlay
+        log('Search UI shown (in-process)')
     except Exception:
-        log_exc(f'Failed to launch Flutter: {FLUTTER_EXE}')
-        return None
+        log_exc('Failed to show search UI')
+
+
+def _overlay_closed():
+    global _ui_overlay
+    _ui_overlay = None
+    log('Search UI closed')
 
 
 # ── Startup registration ──
+
 STARTUP_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 STARTUP_NAME = 'Dockie'
 # Older/installer names that also register the app for auto-start. The tray
@@ -671,6 +664,7 @@ def _run_tray():
 class WindowBridge(QObject):
     show_requested = pyqtSignal()
     quit_requested = pyqtSignal()
+    ui_requested = pyqtSignal()  # triple-Ctrl: show the search overlay
 
 
 class IndexingWindow(QWidget):
@@ -886,6 +880,7 @@ def main():
         window = IndexingWindow()
         bridge.show_requested.connect(window.show_and_raise)
         bridge.quit_requested.connect(app.quit)
+        bridge.ui_requested.connect(_show_search_ui)
         _bridge = bridge
         log('Indexing window ready (hidden)')
     except Exception:
@@ -918,13 +913,6 @@ def main():
             _tray_icon.stop()
         except Exception:
             pass
-    if _flutter_proc:
-        try:
-            _flutter_proc.terminate()
-            _flutter_proc.wait(timeout=5)
-        except Exception:
-            log_exc('Failed to terminate Flutter — killing')
-            _flutter_proc.kill()
 
     log('Done.')
 
