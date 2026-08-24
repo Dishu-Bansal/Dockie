@@ -21,8 +21,8 @@ import urllib.request
 
 # ── Hardcoded configuration ──
 GITHUB_REPO = 'Dishu-Bansal/FileFinder'
-# Keep in sync with the release tag: tag 'v1.0.0' <-> VERSION '1.0.0'.
-VERSION = '1.0.1'
+# Keep in sync with the release tag: tag 'v1.1.0' <-> VERSION '1.1.0'.
+VERSION = '1.1.0'
 # Release assets are Inno Setup installers named dockie_setup_<version>.exe.
 RELEASE_ASSET_PREFIX = 'dockie_setup_'
 RELEASES_LATEST_URL = (
@@ -115,7 +115,7 @@ def _run_and_exit(path):
     os._exit(0)
 
 
-def check_and_update():
+def check_and_update(on_update=None):
     """Run the update check at app startup.
 
     Returns True if an update was applied (the process is exiting or about
@@ -157,6 +157,11 @@ def check_and_update():
                 pass
         return False
 
+    if on_update is not None:
+        try:
+            on_update(latest)
+        except Exception:
+            pass
     print(f'[updater] Update {latest} ready; launching installer...')
     _run_and_exit(dest)
     return True  # unreachable; _run_and_exit never returns

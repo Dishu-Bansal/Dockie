@@ -1,80 +1,617 @@
 import 'dart:async';
-import 'dart:ui';
+import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:window_manager/window_manager.dart';
-import 'package:sqlite3/sqlite3.dart' hide Row;
 import 'dart:math';
 
+import 'package:ffi/ffi.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:hotkey_manager/hotkey_manager.dart';
+import 'package:sqlite3/sqlite3.dart' hide Row;
+import 'package:tray_manager/tray_manager.dart';
+import 'package:window_manager/window_manager.dart';
+
+// The overlay widget is driven from main() through this key.
+final GlobalKey<SearchOverlayState> _overlayKey =
+    GlobalKey<SearchOverlayState>();
+
+// Set by main() so the overlay widget can ask the window layer to hide it
+// without terminating the process.
+void Function()? onOverlayDismissRequested;
+
+// ---------------------------------------------------------------------------
+// Main entry. The Flutter app is the Dockie main process: it owns the
+// triple-Ctrl hotkey, the tray icon and the search overlay, and keeps the
+// Python backend (Dockie.exe, same folder) alive as a child process.
+// ---------------------------------------------------------------------------
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  _log('Flutter UI starting, dbPath=$_dbPath');
+
+  // One instance only. The named mutex also doubles as the installer's
+  // AppMutex=Dockie, so an update can close a running app before replacing
+  // its files (see dockie_installer.iss).
+  if (!_tryAcquireAppMutex()) {
+    return;
+  }
+
+  _log('Dockie UI (main process) starting, dbPath=$_dbPath');
   try {
     await windowManager.ensureInitialized();
   } catch (e) {
     _log('windowManager.ensureInitialized failed: $e', level: 'ERROR');
   }
 
-  // Configure window options: a borderless, transparent, full-screen window.
-  WindowOptions windowOptions = WindowOptions(
+  // Configure the window as a borderless, transparent, full-screen overlay
+  // that is invisible and click-through until summoned (see _setOverlayInert).
+  const windowOptions = WindowOptions(
     fullScreen: true,
     backgroundColor: Colors.transparent,
-    // skipTaskbar: true,
+    skipTaskbar: true,
     titleBarStyle: TitleBarStyle.hidden,
   );
 
   try {
     windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.setAlwaysOnTop(true);
-      await windowManager.show();
-      _log('Window shown (always-on-top)');
+      await windowManager.setSkipTaskbar(true);
+      // Alt+F4 (or any close request) dismisses the overlay instead of
+      // terminating the process.
+      await windowManager.setPreventClose(true);
+      await _setOverlayInert(true);
+      _log('Window ready (inert overlay)');
     });
   } catch (e) {
     _log('waitUntilReadyToShow failed: $e', level: 'ERROR');
   }
 
-  runApp(SpotlightApp());
+  windowManager.addListener(_DockieWindowListener());
+
+  // Backend child process (Dockie.exe), hotkey and tray start alongside.
+  _backend = BackendManager(backendStatus);
+  _backend!.start();
+  _registerTripleCtrlHotkey();
+  _initTray();
+
+  onOverlayDismissRequested = _dismissOverlay;
+  runApp(SpotlightApp(overlayKey: _overlayKey));
 }
 
-// ── Logging ──
-// The Python backend launches this process with stdout piped into
-// dockie.log (prefixed "flutter:"), so every print() here lands in the
-// same log as the backend's own entries. Timestamps keep the two aligned.
+class _DockieWindowListener with WindowListener {
+  @override
+  void onWindowClose() {
+    _log('Window close requested - dismissing overlay');
+    _dismissOverlay();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Logging. The UI writes to the same dockie.log the backend appends to
+// (~/.dockie/dockie.log); lines carry a [flutter] tag to tell them apart.
+// ---------------------------------------------------------------------------
 String _two(int n) => n.toString().padLeft(2, '0');
+
+IOSink? _logSink;
+
+void _ensureLogSink() {
+  if (_logSink != null) return;
+  try {
+    final profile = Platform.environment['USERPROFILE'] ??
+        Platform.environment['HOME'] ??
+        '.';
+    final dir = Directory('$profile\\.dockie');
+    dir.createSync(recursive: true);
+    _logSink = File('${dir.path}\\dockie.log').openWrite(mode: FileMode.append);
+  } catch (_) {
+    _logSink = null; // fall back to stdout below
+  }
+}
 
 void _log(String message, {String level = 'INFO'}) {
   final t = DateTime.now();
-  // ignore: avoid_print - deliberate transport: backend pipes stdout to dockie.log.
-  print('[${t.year}-${_two(t.month)}-${_two(t.day)} '
+  final line = '[${t.year}-${_two(t.month)}-${_two(t.day)} '
       '${_two(t.hour)}:${_two(t.minute)}:${_two(t.second)}] '
-      '[$level] $message');
+      '[$level] [flutter] $message';
+  _ensureLogSink();
+  if (_logSink != null) {
+    try {
+      _logSink!.writeln(line);
+    } catch (_) {
+      // ignore: dropped log line
+    }
+  } else {
+    // ignore: avoid_print - fallback when the log file is unavailable.
+    print(line);
+  }
 }
 
-// ── Path helpers ──
+// ---------------------------------------------------------------------------
+// FFI helpers: single-instance mutex, foreground-lock grant, key state.
+// ---------------------------------------------------------------------------
+final DynamicLibrary _kernel32 = DynamicLibrary.open('kernel32.dll');
+final DynamicLibrary _user32 = DynamicLibrary.open('user32.dll');
+
+typedef _CreateMutexWFn =
+    Pointer<Void> Function(Pointer<Void>, Int32, Pointer<Utf16>);
+typedef _CreateMutexWDart =
+    Pointer<Void> Function(Pointer<Void>, int, Pointer<Utf16>);
+
+typedef _GetLastErrorFn = Uint32 Function();
+typedef _GetLastErrorDart = int Function();
+
+typedef _CloseHandleFn = Int32 Function(Pointer<Void>);
+typedef _CloseHandleDart = int Function(Pointer<Void>);
+
+typedef _KeybdEventFn = Void Function(Uint8, Uint8, Uint32, UintPtr);
+typedef _KeybdEventDart = void Function(int, int, int, int);
+
+typedef _GetAsyncKeyStateFn = Int16 Function(Int32);
+typedef _GetAsyncKeyStateDart = int Function(int);
+
+final _createMutexW =
+    _kernel32.lookupFunction<_CreateMutexWFn, _CreateMutexWDart>('CreateMutexW');
+final _getLastError = _kernel32.lookupFunction<_GetLastErrorFn, _GetLastErrorDart>(
+    'GetLastError');
+final _closeHandle = _kernel32.lookupFunction<_CloseHandleFn, _CloseHandleDart>(
+    'CloseHandle');
+final _keybdEvent = _user32.lookupFunction<_KeybdEventFn, _KeybdEventDart>(
+    'keybd_event');
+final _getAsyncKeyState = _user32.lookupFunction<_GetAsyncKeyStateFn,
+    _GetAsyncKeyStateDart>('GetAsyncKeyState');
+
+Pointer<Void>? _appMutexHandle;
+
+/// Creates the 'Dockie' named mutex. Returns false when another instance is
+/// already running (the handle is intentionally kept for the process
+/// lifetime so the installer's AppMutex=Dockie finds it).
+bool _tryAcquireAppMutex() {
+  try {
+    final name = 'Dockie'.toNativeUtf16();
+    _appMutexHandle = _createMutexW(Pointer.fromAddress(0), 0, name);
+    malloc.free(name);
+    if (_getLastError() == 183 /* ERROR_ALREADY_EXISTS */) {
+      _log('Another Dockie instance is running - exiting');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    _log('App mutex check failed: $e', level: 'WARN');
+    return true;
+  }
+}
+
+/// Grants this process the Windows foreground lock by injecting a benign
+/// F24 key-up. Injected input marks the process as the last-input recipient,
+/// which is what allows SetForegroundWindow to succeed when summoning the
+/// overlay from a global hotkey.
+void _grantForegroundLock() {
+  try {
+    _keybdEvent(0x87 /* VK_F24 */, 0, 0x0002 /* KEYEVENTF_KEYUP */, 0);
+  } catch (e) {
+    _log('Foreground lock injection failed: $e', level: 'WARN');
+  }
+}
+
+bool _isCtrlDown() => (_getAsyncKeyState(0x11 /* VK_CONTROL */) & 0x8000) != 0;
+
+// ---------------------------------------------------------------------------
+// Backend child process (Dockie.exe) + line-based IPC over stdin/stdout.
+//   Flutter -> backend (stdin): PING | SHUTDOWN | GET_STATUS | GET_VERSION |
+//                               GET_RUN_ON_STARTUP | RUN_ON_STARTUP <0|1>
+//   backend -> Flutter (stdout): READY | VERSION <v> | STATUS <phase> <found>
+//                               <done> <current> | RUN_ON_STARTUP <0|1> |
+//                               PONG | UPDATE_EXITING <v>
+// ---------------------------------------------------------------------------
+class BackendStatus extends ChangeNotifier {
+  String phase = 'stopped'; // stopped | starting | idle | scan | extract | done
+  int found = 0;
+  int done = 0;
+  String current = '';
+  String version = '';
+  bool runOnStartup = true;
+  bool updating = false;
+
+  /// Public wrapper around the protected [notifyListeners] so the
+  /// BackendManager can broadcast changes.
+  void notify() => notifyListeners();
+}
+
+final BackendStatus backendStatus = BackendStatus();
+
+class BackendManager {
+  BackendManager(this.status);
+
+  final BackendStatus status;
+  Process? _proc;
+  bool _intentionalStop = false;
+  int _restartAttempts = 0;
+  Timer? _restartTimer;
+  final List<String> _pendingCommands = [];
+
+  String? _findBackendExe() {
+    // Test/dev override; packaged builds always find Dockie.exe next to the
+    // Flutter executable.
+    final override = Platform.environment['DOCKIE_BACKEND_EXE'];
+    if (override != null && override.isNotEmpty && File(override).existsSync()) {
+      return override;
+    }
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final candidates = <String>[
+      '$exeDir\\Dockie.exe',
+      '${Directory.current.path}\\Dockie.exe',
+      // Dev layout: repo/dist/Dockie.exe relative to the dockie_ui project.
+      '${Directory.current.path}\\..\\dist\\Dockie.exe',
+    ];
+    for (final candidate in candidates) {
+      if (File(candidate).existsSync()) return candidate;
+    }
+    return null;
+  }
+
+  Future<void> start() async {
+    if (_intentionalStop) return;
+    final exe = _findBackendExe();
+    if (exe == null) {
+      _log('Backend Dockie.exe not found - indexing will not run',
+          level: 'ERROR');
+      return;
+    }
+    try {
+      final env = Map<String, String>.from(Platform.environment);
+      env['DOCKIE_PARENT_PID'] = '$pid';
+      _log('Launching backend: $exe');
+      status.phase = 'starting';
+      status.notify();
+      _proc = await Process.start(
+        exe,
+        const [],
+        environment: env,
+        workingDirectory: File(exe).parent.path,
+      );
+      _proc!.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(_onBackendLine);
+      _proc!.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => _log('backend(stderr): $line', level: 'WARN'));
+      _proc!.exitCode.then((code) {
+        _log('Backend exited (code=$code)');
+        _onBackendExited();
+      });
+      final pending = List.of(_pendingCommands);
+      _pendingCommands.clear();
+      for (final command in pending) {
+        _send(command);
+      }
+    } catch (e) {
+      _log('Failed to launch backend: $e', level: 'ERROR');
+    }
+  }
+
+  void _onBackendExited() {
+    _proc = null;
+    if (_intentionalStop || status.updating) return;
+    // Keep the backend alive: the overlay depends on its index. Back off
+    // after repeated crashes to avoid a relaunch loop.
+    _restartAttempts++;
+    final delay = _restartAttempts <= 3 ? 2 : 15;
+    _restartTimer?.cancel();
+    _restartTimer = Timer(Duration(seconds: delay), () {
+      status.phase = 'starting';
+      status.notify();
+      start();
+    });
+  }
+
+  void _onBackendLine(String line) {
+    line = line.trim();
+    if (line.isEmpty) return;
+    if (line.startsWith('STATUS ')) {
+      final parts = line.split(' ');
+      status.phase = parts.length > 1 ? parts[1] : status.phase;
+      status.found =
+          parts.length > 2 ? int.tryParse(parts[2]) ?? status.found : status.found;
+      status.done =
+          parts.length > 3 ? int.tryParse(parts[3]) ?? status.done : status.done;
+      status.current = parts.length > 4 ? parts.sublist(4).join(' ') : '';
+      status.notify();
+    } else if (line.startsWith('VERSION ')) {
+      status.version = line.substring('VERSION '.length).trim();
+      _updateTrayMenu();
+    } else if (line.startsWith('RUN_ON_STARTUP ')) {
+      final on = line.substring('RUN_ON_STARTUP '.length).trim() == '1';
+      status.runOnStartup = on;
+      _runOnStartup = on;
+      _updateTrayMenu();
+    } else if (line == 'READY') {
+      status.phase = 'idle';
+      status.notify();
+    } else if (line.startsWith('UPDATE_EXITING')) {
+      // Backend found a newer release and is handing off to the installer.
+      // Exit ourselves so no file lock or AppMutex is held when files are
+      // replaced; the installer relaunches the new dockie_ui.exe.
+      status.updating = true;
+      status.notify();
+      _log('Backend exiting for update: $line');
+      _exitApp();
+    } else {
+      _log('backend: $line');
+    }
+  }
+
+  void send(String command) {
+    if (_proc == null) {
+      _pendingCommands.add(command);
+      return;
+    }
+    _send(command);
+  }
+
+  void _send(String command) {
+    try {
+      _proc?.stdin.writeln(command);
+    } catch (e) {
+      _log('Backend send failed: $e', level: 'WARN');
+    }
+  }
+
+  Future<void> stop() async {
+    _intentionalStop = true;
+    if (_proc == null) return;
+    _send('SHUTDOWN');
+    try {
+      final code = await _proc!.exitCode.timeout(const Duration(seconds: 4),
+          onTimeout: () {
+        _log('Backend did not exit in time - killing');
+        _proc!.kill();
+        return -1;
+      });
+      _log('Backend stopped (code=$code)');
+    } catch (e) {
+      _log('Backend stop failed: $e', level: 'WARN');
+    }
+    _proc = null;
+  }
+}
+
+BackendManager? _backend;
+
+// ---------------------------------------------------------------------------
+// Triple-Ctrl hotkey (hotkey_manager). RegisterHotKey with VK_CONTROL fires
+// a WM_HOTKEY on every Ctrl press (left or right); three presses within one
+// second summon the overlay.
+// ---------------------------------------------------------------------------
+const Duration _kTripleCtrlWindow = Duration(seconds: 1);
+HotKey? _tripleCtrlHotKey;
+final List<DateTime> _ctrlPresses = [];
+Timer? _ctrlWindowTimer;
+
+// Auto-repeat protection: WM_HOTKEY repeats while a key is held, so only
+// count a press once the previous one has been released (observed via
+// GetAsyncKeyState polling between presses).
+bool _ctrlHeld = false;
+Timer? _ctrlReleaseWatch;
+
+Future<void> _registerTripleCtrlHotkey() async {
+  try {
+    await hotKeyManager.unregisterAll();
+    _tripleCtrlHotKey = HotKey(
+      // Maps to Windows VK_CONTROL (0x11); the modifier plus the control key
+      // collapses to "Ctrl pressed", left or right.
+      key: PhysicalKeyboardKey.controlLeft,
+      modifiers: [HotKeyModifier.control],
+      scope: HotKeyScope.system,
+    );
+    await hotKeyManager.register(
+      _tripleCtrlHotKey!,
+      keyDownHandler: (hotKey) => _onCtrlPressed(),
+    );
+    _log('Triple-Ctrl hotkey registered (hotkey_manager)');
+  } catch (e) {
+    _log('Hotkey registration failed: $e', level: 'ERROR');
+  }
+}
+
+void _onCtrlPressed() {
+  if (_ctrlHeld) return; // keyboard auto-repeat while held - ignore
+  _ctrlHeld = true;
+  _ctrlReleaseWatch?.cancel();
+  _ctrlReleaseWatch = Timer.periodic(const Duration(milliseconds: 30), (_) {
+    if (!_isCtrlDown()) {
+      _ctrlHeld = false;
+      _ctrlReleaseWatch?.cancel();
+    }
+  });
+
+  final now = DateTime.now();
+  _ctrlPresses.add(now);
+  _ctrlPresses.removeWhere((t) => now.difference(t) > _kTripleCtrlWindow);
+  _ctrlWindowTimer?.cancel();
+  _ctrlWindowTimer = Timer(_kTripleCtrlWindow, () => _ctrlPresses.clear());
+
+  if (_ctrlPresses.length >= 3) {
+    _ctrlPresses.clear();
+    _ctrlWindowTimer?.cancel();
+    _log('Hotkey: triple-Ctrl -> summon overlay');
+    _summonOverlay();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// System tray (tray_manager).
+// ---------------------------------------------------------------------------
+bool _runOnStartup = true;
+
+class _DockieTrayListener extends TrayListener {
+  @override
+  void onTrayIconMouseDown() {
+    _summonOverlay();
+  }
+
+  @override
+  void onTrayIconRightMouseDown() {
+    trayManager.popUpContextMenu();
+  }
+
+  @override
+  void onTrayMenuItemClick(MenuItem menuItem) {
+    switch (menuItem.key) {
+      case 'show':
+        _summonOverlay();
+        break;
+      case 'run-on-startup':
+        _toggleRunOnStartup();
+        break;
+      case 'exit':
+        _exitApp();
+        break;
+    }
+  }
+}
+
+_DockieTrayListener? _trayListener;
+
+Future<void> _initTray() async {
+  try {
+    _trayListener = _DockieTrayListener();
+    trayManager.addListener(_trayListener!);
+    // tray_manager resolves the path relative to <exe>\data\flutter_assets.
+    await trayManager.setIcon('assets/robot.ico');
+    await trayManager.setToolTip('Dockie');
+    await _updateTrayMenu();
+    _log('Tray initialized');
+  } catch (e) {
+    _log('Tray init failed: $e', level: 'ERROR');
+  }
+}
+
+Future<void> _updateTrayMenu() async {
+  final version = backendStatus.version;
+  try {
+    await trayManager.setContextMenu(Menu(items: [
+      MenuItem(key: 'show', label: 'Show'),
+      MenuItem.separator(),
+      MenuItem.checkbox(
+        key: 'run-on-startup',
+        label: 'Run on startup',
+        checked: _runOnStartup,
+      ),
+      MenuItem.separator(),
+      MenuItem(
+        key: 'version',
+        label: version.isEmpty ? 'Version ...' : 'Version $version',
+        disabled: true,
+      ),
+      MenuItem(key: 'exit', label: 'Exit'),
+    ]));
+  } catch (e) {
+    _log('Tray menu update failed: $e', level: 'WARN');
+  }
+}
+
+void _toggleRunOnStartup() {
+  _runOnStartup = !_runOnStartup;
+  _updateTrayMenu();
+  _backend?.send('RUN_ON_STARTUP ${_runOnStartup ? 1 : 0}');
+}
+
+// ---------------------------------------------------------------------------
+// Window control: the overlay is always visible so the Flutter engine keeps
+// a valid view size (hiding it leaves a stale size and the overlay later
+// renders off-center or not at all). When idle it is inert - fully
+// transparent, click-through and unfocused; triple-Ctrl flips it live.
+// ---------------------------------------------------------------------------
+Future<void> _setOverlayInert(bool inert) async {
+  try {
+    await windowManager.setOpacity(inert ? 0 : 1);
+    await windowManager.setIgnoreMouseEvents(inert);
+    if (inert) {
+      await windowManager.blur();
+    }
+  } catch (e) {
+    _log('setOverlayInert($inert) failed: $e', level: 'ERROR');
+  }
+}
+
+Future<void> _summonOverlay() async {
+  try {
+    await windowManager.setOpacity(1);
+    await windowManager.setIgnoreMouseEvents(false);
+    await windowManager.show();
+    _grantForegroundLock();
+    await windowManager.focus();
+    _overlayKey.currentState?.summon();
+  } catch (e) {
+    _log('Summon overlay failed: $e', level: 'ERROR');
+  }
+}
+
+Future<void> _dismissOverlay() async {
+  _overlayKey.currentState?.dismiss();
+  await _setOverlayInert(true);
+}
+
+// ---------------------------------------------------------------------------
+// App exit: stop the backend, unregister the hotkey, destroy the tray and
+// the window, then leave.
+// ---------------------------------------------------------------------------
+Future<void> _exitApp() async {
+  _log('Exiting app');
+  _ctrlWindowTimer?.cancel();
+  _ctrlReleaseWatch?.cancel();
+  if (_appMutexHandle != null) {
+    _closeHandle(_appMutexHandle!);
+    _appMutexHandle = null;
+  }
+  try {
+    await hotKeyManager.unregisterAll();
+  } catch (e) {
+    _log('Hotkey unregister failed: $e', level: 'WARN');
+  }
+  try {
+    await trayManager.destroy();
+  } catch (e) {
+    _log('Tray destroy failed: $e', level: 'WARN');
+  }
+  await _backend?.stop();
+  try {
+    await windowManager.destroy();
+  } catch (e) {
+    _log('Window destroy failed: $e', level: 'WARN');
+  }
+  exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Path helpers.
+// ---------------------------------------------------------------------------
 // Test hook: overridden by widget_test.dart so the UI never touches the real
 // DB (Platform.environment is unmodifiable in the test harness).
 String dbPathOverride = '';
 
-// Resolve the DB where the backend actually keeps it:
-//  1. DOCKIE_DB_PATH — the authoritative path, the backend passes it to us
-//  2. next to this exe — packaged installs keep the DB next to Dockie.exe
-//     (which sits beside dockie_ui.exe); see db._data_dir()
-//  3. ~/.dockie — dev runs and read-only install dirs (e.g. Program Files)
+// The backend keeps the index at ~/.dockie/index.db (see db._data_dir()).
+// DOCKIE_DB_PATH and the exe-adjacent fallback remain for dev runs and
+// legacy installs.
 String get _dbPath {
   if (dbPathOverride.isNotEmpty) return dbPathOverride;
   final fromEnv = Platform.environment['DOCKIE_DB_PATH'];
   if (fromEnv != null && fromEnv.isNotEmpty) {
     return fromEnv;
   }
+  final profile = Platform.environment['USERPROFILE'] ??
+      Platform.environment['HOME'] ??
+      '.';
+  final userDb = '$profile\\.dockie\\index.db';
+  if (File(userDb).existsSync()) {
+    return userDb;
+  }
   final exeDir = File(Platform.resolvedExecutable).parent.path;
   if (File('$exeDir\\index.db').existsSync()) {
     return '$exeDir\\index.db';
   }
-  final profile = Platform.environment['USERPROFILE'] ??
-      Platform.environment['HOME'] ??
-      '.';
-  return '$profile\\.dockie\\index.db';
+  return userDb;
 }
 
 class _SearchResult {
@@ -86,14 +623,16 @@ class _SearchResult {
 }
 
 class SpotlightApp extends StatelessWidget {
-  const SpotlightApp({super.key});
+  const SpotlightApp({super.key, this.overlayKey});
+
+  final GlobalKey<SearchOverlayState>? overlayKey;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Dockie Spotlight Search',
       debugShowCheckedModeBanner: false,
-      home: const SearchOverlay(),
+      home: SearchOverlay(key: overlayKey),
     );
   }
 }
@@ -102,28 +641,15 @@ class SearchOverlay extends StatefulWidget {
   const SearchOverlay({super.key});
 
   @override
-  State<SearchOverlay> createState() => _SearchOverlayState();
+  State<SearchOverlay> createState() => SearchOverlayState();
 }
 
-class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProviderStateMixin {
+class SearchOverlayState extends State<SearchOverlay>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _overlayFocusNode = FocusNode();
   late final FocusNode _textFocusNode = FocusNode(
-    onKeyEvent: _handleTextFieldKey
-    //     (FocusNode node, KeyEvent evt) {
-    //   if (HardwareKeyboard.instance.isShiftPressed &&
-    //       evt.logicalKey.keyLabel == 'Enter') {
-    //     if (evt is KeyDownEvent) {
-    //       String query = _searchController.text.trim() + ";;SHIFT";
-    //       print(query);
-    //       stdout.writeln(query); // Send search query back to Python
-    //       exit(0);
-    //     }
-    //     return KeyEventResult.handled;
-    //   } else {
-    //     return KeyEventResult.ignored;
-    //   }
-    // },
+    onKeyEvent: _handleTextFieldKey,
   );
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -133,7 +659,6 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   List<_SearchResult> _results = [];
   int _selectedIndex = 0;
   Timer? _debounce;
-  bool _showResults = false;
   final ScrollController _scrollController = ScrollController();
   // Per-row keys so keyboard navigation can scroll the selected row into view
   // even though rows now have intrinsic (variable) heights.
@@ -143,27 +668,24 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   void initState() {
     super.initState();
     _log('UI state initializing');
-    // Initialize the animation controller for a fade-in effect
+    // Initialize the animation controller for a fade-in effect on summon.
     _animationController = AnimationController(
-      duration: Duration(milliseconds: 500),
+      duration: const Duration(milliseconds: 500),
       vsync: this,
     );
     _fadeAnimation = CurvedAnimation(
       parent: _animationController,
       curve: Curves.easeIn,
     );
-    // Request focus so that the text field is active immediately.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _textFocusNode.requestFocus();
-      _animationController.forward();
-    });
 
     _initDb();
     _searchController.addListener(_onSearchChanged);
+    backendStatus.addListener(_onBackendStatusChanged);
   }
 
   @override
   void dispose() {
+    backendStatus.removeListener(_onBackendStatusChanged);
     _animationController.dispose();
     _searchController.dispose();
     _overlayFocusNode.dispose();
@@ -174,13 +696,37 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     super.dispose();
   }
 
-  // Close the app. The Python backend relaunches it on the next Alt+Space.
-  void _closeApp() {
-    _log('Closing overlay');
-    exit(0);
+  void _onBackendStatusChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
-  // ── Highlight helper ──
+  /// Called by main() when the overlay should become visible.
+  void summon() {
+    _log('Overlay summoned');
+    _searchController.clear();
+    _clearResults();
+    _animationController.forward(from: 0);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _textFocusNode.requestFocus();
+    });
+  }
+
+  /// Called by main() when the overlay should go back to inert.
+  void dismiss() {
+    _log('Overlay dismissed');
+    _searchController.clear();
+    _clearResults();
+    _overlayFocusNode.unfocus();
+  }
+
+  // Hide the overlay. The main process keeps running (hotkey + tray + backend).
+  void _hideOverlay() {
+    _log('Hiding overlay');
+    onOverlayDismissRequested?.call();
+  }
+
+  // Highlight helper
   List<TextSpan> _highlightText(String text, String query) {
     if (query.isEmpty) return [TextSpan(text: text)];
     final lower = text.toLowerCase();
@@ -211,8 +757,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     return spans;
   }
 
-
-  // ── DB ──
+  // DB
   void _initDb() {
     final path = _dbPath;
     _log('DB init: path=$path');
@@ -235,12 +780,11 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     setState(() {
       _results = [];
       _selectedIndex = 0;
-      _showResults = false;
       _itemKeys.clear();
     });
   }
 
-  // ── Search ──
+  // Search
   void _onSearchChanged() {
     final query = _searchController.text.trim();
     if (query.isEmpty) {
@@ -257,7 +801,6 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
   void _performSearch(String query) {
     if (!_dbReady) {
       _log('Search: DB not ready for query "$query"', level: 'WARN');
-      setState(() => _showResults = true);
       return;
     }
 
@@ -307,7 +850,6 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     setState(() {
       _results = results;
       _selectedIndex = results.isNotEmpty ? 0 : -1;
-      _showResults = true;
       _itemKeys.clear();
     });
 
@@ -316,7 +858,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     }
   }
 
-  // ── File actions ──
+  // File actions
   Future<void> _openFile(String path) async {
     _log('Open file: $path');
     try {
@@ -350,7 +892,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
         await _openFile(path);
       }
     }
-    _closeApp();
+    _hideOverlay();
   }
 
   Future<void> _activateResult(int index) async {
@@ -361,16 +903,13 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     } else {
       await _openFile(_results[index].path);
     }
-    _closeApp();
+    _hideOverlay();
   }
 
-  // ── Keyboard ──
+  // Keyboard
   static final Set<LogicalKeyboardKey> _dismissKeys = {
-    // Modifiers (Alt excluded on purpose: Alt+Space is the summon hotkey and
-    // must not dismiss the overlay while the chord is still being typed).
-    LogicalKeyboardKey.control,
-    LogicalKeyboardKey.controlLeft,
-    LogicalKeyboardKey.controlRight,
+    // Ctrl is the summon hotkey (triple-Ctrl), so it must not dismiss the
+    // overlay while the chord is still being typed.
     LogicalKeyboardKey.meta,
     LogicalKeyboardKey.metaLeft,
     LogicalKeyboardKey.metaRight,
@@ -407,13 +946,13 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
 
     if (_isDismissKey(evt.logicalKey)) {
       _log('Dismiss key: ${evt.logicalKey}');
-      _closeApp();
+      _hideOverlay();
       return KeyEventResult.handled;
     }
 
     if (evt.logicalKey == LogicalKeyboardKey.escape) {
       _log('Dismiss key: Escape');
-      _closeApp();
+      _hideOverlay();
       return KeyEventResult.handled;
     }
 
@@ -465,13 +1004,26 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
     if (_isDismissKey(event.logicalKey) ||
         event.logicalKey == LogicalKeyboardKey.escape) {
       _log('Overlay dismiss key: ${event.logicalKey}');
-      _closeApp();
+      _hideOverlay();
     }
   }
 
   // Compact status block shown under the search bar while the index is still
   // being built. Stays inside the panel so the spotlight look is preserved.
   Widget _buildNotReadyStatus() {
+    final st = backendStatus;
+    final indexing = st.phase == 'scan' || st.phase == 'extract';
+    final String title;
+    final String subtitle;
+    if (indexing) {
+      title = 'Indexing in progress';
+      subtitle = '${st.found.toString()} found, '
+          '${st.done.toString()} done'
+          '${st.current.isNotEmpty ? ' - ${st.current}' : ''}';
+    } else {
+      title = 'Index not ready';
+      subtitle = 'The PDF index is still being built. Please wait.';
+    }
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
@@ -483,18 +1035,17 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
         children: [
           const Icon(Icons.hourglass_empty, size: 18, color: Colors.grey),
           const SizedBox(height: 8),
-          Text('Index not ready',
+          Text(title,
               style: const TextStyle(fontSize: 13, color: Colors.black54)),
           const SizedBox(height: 4),
-          Text('The PDF index is still being built. Please wait.',
+          Text(subtitle,
               style: const TextStyle(fontSize: 11, color: Colors.black38)),
         ],
       ),
     );
   }
 
-
-  // ── Snippet ──
+  // Snippet
   String _makeSnippet(String text, String query) {
     if (text.isEmpty || query.isEmpty) return '';
     final idx = text.toLowerCase().indexOf(query.toLowerCase());
@@ -522,7 +1073,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
           focusNode: _overlayFocusNode,
           onKeyEvent: _onOverlayKey,
           child: GestureDetector(
-            onTap: _closeApp,
+            onTap: _hideOverlay,
             child: Container(
               color: Colors.black12,
               child: Column(
@@ -535,7 +1086,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                       child: Container(
                         width: MediaQuery.sizeOf(context).width * 0.35,
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.95),
+                          color: Colors.white.withValues(alpha: 0.95),
                           borderRadius: BorderRadius.circular(7),
                           boxShadow: [
                             BoxShadow(
@@ -549,7 +1100,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            // ── Search bar: full-width row, input left, icon right ──
+                            // Search bar: full-width row, input left, icon right
                             Padding(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 14, vertical: 12),
@@ -582,7 +1133,7 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                             else if (_results.isNotEmpty) ...[
                               // Thin divider between search bar and results.
                               const Divider(height: 1, thickness: 1),
-                              // ── Scrollable results list ──
+                              // Scrollable results list
                               ConstrainedBox(
                                 constraints:
                                     const BoxConstraints(maxHeight: 300),
@@ -707,54 +1258,6 @@ class _SearchOverlayState extends State<SearchOverlay> with SingleTickerProvider
                       ),
                     ),
                   ),
-                  // _showResults ? GestureDetector(
-                  //   onTap: () => {},//_activateResult(index),
-                  //   child: Container(
-                  //     color: true//isSelected
-                  //         ? Colors.blue.withOpacity(0.10)
-                  //         : Colors.transparent,
-                  //     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  //     child: Column(
-                  //       crossAxisAlignment: CrossAxisAlignment.start,
-                  //       mainAxisAlignment: MainAxisAlignment.center,
-                  //       children: [
-                  //         // Filename
-                  //         RichText(
-                  //           text: TextSpan(
-                  //             style: const TextStyle(
-                  //                 fontSize: 13,
-                  //                 color: Colors.black87,
-                  //                 fontWeight: FontWeight.w600),
-                  //             children: _highlightText(result.filename, query),
-                  //           ),
-                  //           maxLines: 1,
-                  //           overflow: TextOverflow.ellipsis,
-                  //         ),
-                  //         if (snippet.isNotEmpty) ...[
-                  //           const SizedBox(height: 3),
-                  //           RichText(
-                  //             text: TextSpan(
-                  //               style: const TextStyle(
-                  //                   fontSize: 12, color: Colors.black54),
-                  //               children: _highlightText(snippet, query),
-                  //             ),
-                  //             maxLines: 1,
-                  //             overflow: TextOverflow.ellipsis,
-                  //           ),
-                  //         ],
-                  //         const SizedBox(height: 3),
-                  //         // File path
-                  //         Text(
-                  //           result.path,
-                  //           style: const TextStyle(
-                  //               fontSize: 10, color: Colors.black38),
-                  //           maxLines: 1,
-                  //           overflow: TextOverflow.ellipsis,
-                  //         ),
-                  //       ],
-                  //     ),
-                  //   ),
-                  // ) : SizedBox(),
                 ],
               ),
             ),

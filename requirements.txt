@@ -1,9 +1,7 @@
 PyMuPDF>=1.24
 watchdog>=6.0
-pynput>=1.7
-pystray>=0.19
-Pillow>=10.0
-PyQt6>=6.4
+# UI concerns (hotkey, tray, overlay) moved to the Flutter main process in
+# 1.1.0; the backend is now a headless child process.
 # Build tool. 6.22.1+ added an unconditional onefile parent-process security
 # check that aborts Dockie when it is relaunched from the Inno installer after
 # an auto-update ("Security validation failure: parent process has different

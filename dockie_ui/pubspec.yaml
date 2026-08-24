@@ -10,9 +10,14 @@ dependencies:
   sqlite3: ^2.7.6
   sqlite3_flutter_libs: ^0.5.30
   window_manager: ^0.5.1
+  hotkey_manager: ^0.2.3
+  tray_manager: ^0.2.3
+  ffi: ^2.1.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 flutter:
   uses-material-design: true
+  assets:
+    - assets/robot.ico

@@ -3,9 +3,11 @@
 ; Non-commercial use only
 
 #define MyAppName "Dockie"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Bansia Labs"
-#define MyAppExeName "Dockie.exe"
+; Since 1.1.0 the Flutter UI (dockie_ui.exe) is the main process; the Python
+; backend (Dockie.exe) is a child it spawns.
+#define MyAppExeName "dockie_ui.exe"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -26,14 +28,15 @@ ArchitecturesAllowed=x64compatible
 ; the 64-bit view of the registry.
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
-; The app creates this mutex (backend.py) so a reinstall/update can close a
-; running Dockie before replacing its files instead of failing on a lock.
+; The app creates this mutex (dockie_ui.exe, main process) so a
+; reinstall/update can close a running Dockie before replacing its files
+; instead of failing on a lock.
 AppMutex=Dockie
 CloseApplications=yes
 RestartApplications=no
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
-OutputBaseFilename=dockie_setup_v101
+OutputBaseFilename=dockie_setup_v110
 SetupIconFile=D:\Projects\Automation\FileFinder\robot.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
@@ -52,6 +55,8 @@ Source: "D:\Projects\Automation\FileFinder\dist\screen_retriever_windows_plugin.
 Source: "D:\Projects\Automation\FileFinder\dist\sqlite3.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "D:\Projects\Automation\FileFinder\dist\sqlite3_flutter_libs_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "D:\Projects\Automation\FileFinder\dist\window_manager_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "D:\Projects\Automation\FileFinder\dist\hotkey_manager_windows_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "D:\Projects\Automation\FileFinder\dist\tray_manager_plugin.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "D:\Projects\Automation\FileFinder\dist\native_assets.json"; DestDir: "{app}"; Flags: ignoreversion
 ; The Flutter engine resolves its assets (flutter_assets, app.so, icudtl.dat)
 ; relative to <exe dir>\data\, so the data folder must keep its subfolder.
