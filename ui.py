@@ -811,6 +811,9 @@ class SearchOverlay(QWidget):
         root.addLayout(center)
         root.addStretch(1)
 
+        # Search fires only after the user pauses typing: every keystroke
+        # restarts this single-shot timer (see _schedule_search), so the
+        # query runs at most once per SEARCH_DEBOUNCE_MS of silence.
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(SEARCH_DEBOUNCE_MS)
@@ -913,6 +916,15 @@ class SearchOverlay(QWidget):
             self._debounce.stop()
             self.panel.set_results([], '')
             return
+        self._schedule_search()
+
+    def _schedule_search(self):
+        """(Re)start the pause timer.
+
+        A query only fires once the user has been idle for
+        SEARCH_DEBOUNCE_MS — never on every keystroke. This is the single
+        scheduling entry point the async pipeline hangs off.
+        """
         self._debounce.start()
 
     def _perform_search(self):
