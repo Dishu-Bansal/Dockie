@@ -15,6 +15,7 @@ DB resolution (first match wins):
 import datetime
 import html
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -122,6 +123,10 @@ NOT_READY_SUBTITLE = 'The PDF index is still being built. Please wait.'
 # SEARCH_SQL is the fallback for databases that predate FTS5. Both rank
 # cheaply first and only then join back to `files` for the text of the
 # final LIMIT rows, so matched fulltext never rides through the sort.
+# Snippets for content matches are computed separately (FTS_SNIPPET_SQL)
+# only for the rows that survive the LIMIT: FTS5's snippet() needs to
+# read the matched rows' text, so computing it for every match (not just
+# the top rows) dominates the query.
 FTS_SEARCH_SQL = """
 SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
 FROM (
@@ -146,6 +151,17 @@ FROM (
 ) r
 JOIN files f ON f.path = r.path
 ORDER BY r.rank, r.filename
+"""
+
+# Snippet around the match for the surviving content matches. Matched
+# tokens (possibly stems, not the literal query) are wrapped in
+# char(2)/char(3) markers so the UI can highlight exactly what matched.
+FTS_SNIPPET_SQL = """
+SELECT f.path, snippet(files_fts, 1, char(2), char(3), ' … ', 12)
+FROM files_fts
+JOIN files f ON f.rowid = files_fts.rowid
+WHERE files_fts MATCH ?
+  AND f.path IN (%s)
 """
 
 SEARCH_SQL = """
@@ -196,6 +212,20 @@ def fts5_match(query):
                     for term in query.split())
 
 
+def _fetch_snippets(conn, match, paths):
+    """FTS5 snippets for the given content-matched paths: {path: snippet}.
+
+    snippet() re-tokenizes the matched rows' text, so it is restricted to
+    the rows the literal-find snippet cannot explain (search() passes only
+    the surviving rank-3 paths it failed on). Matched tokens are wrapped
+    in \\x02/\\x03 markers."""
+    if not paths:
+        return {}
+    marks = ','.join('?' for _ in paths)
+    return dict(conn.execute(
+        FTS_SNIPPET_SQL % marks, (match, *paths)).fetchall())
+
+
 def _fts_available(conn):
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files_fts'"
@@ -205,7 +235,10 @@ def _fts_available(conn):
 
 def search(query):
     """Run a query against the index DB. Returns a list of
-    (path, filename, fulltext, rank) tuples, or None if the DB is missing."""
+    (path, filename, snippet, rank) tuples, or None if the DB is missing.
+    The snippet is FTS5's own fragment around the match (matched tokens
+    wrapped in \x02/\x03 markers for highlighting), falling back to a
+    literal-find snippet for filename matches and pre-FTS5 databases."""
     q = query.strip()
     if not q:
         return []
@@ -220,19 +253,45 @@ def search(query):
         conn = sqlite3.connect(db_path())
         try:
             if _fts_available(conn):
+                fts_path = True
                 rows = conn.execute(
                     FTS_SEARCH_SQL,
                     (prefix, contains, match, SEARCH_LIMIT),
                 ).fetchall()
+                # Literal-find snippets are cheap; FTS5's snippet() has to
+                # re-tokenize the matched row's text, so reserve it for
+                # rows the literal find cannot explain (stems, multi-word
+                # AND, filename-column matches).
+                snips = {}
+                need_fts = []
+                for path, filename, fulltext, rank in rows:
+                    if rank == 3:
+                        lit = make_snippet(fulltext, q)
+                        if lit:
+                            snips[path] = lit
+                        else:
+                            need_fts.append(path)
+                snips.update(_fetch_snippets(conn, match, need_fts))
             else:
+                fts_path = False
                 rows = conn.execute(
                     SEARCH_SQL,
                     (prefix, contains, contains, contains, contains,
                      SEARCH_LIMIT),
                 ).fetchall()
+                snips = {}
         finally:
             conn.close()
-        return [(r[0], r[1], r[2], r[3]) for r in rows]
+        results = []
+        for path, filename, fulltext, rank in rows:
+            # Rank 3 = content match: prefer FTS5's marked snippet, then
+            # the literal-find one. Filename matches and the LIKE fallback
+            # keep the literal-find snippet (may be empty when the text has
+            # no match).
+            snippet = (snips.get(path) or '') if fts_path and rank == 3 else (
+                make_snippet(fulltext, q) if rank <= 3 else '')
+            results.append((path, filename, snippet, rank))
+        return results
     except Exception:
         return []
 
@@ -337,9 +396,21 @@ def _clip_lines(text, font, max_width, max_lines):
     return keep
 
 
+_HIGHLIGHT_SPAN = ('<span style="background-color:#FFEB3B;color:#000000;'
+                   'font-weight:600;">')
+_MARKER_RE = re.compile(r'\x02(.*?)\x03')
+
+
 def _highlight_html(text, query):
-    """Escape text and wrap every case-insensitive query match in the
-    overlay highlight span."""
+    """Escape text and wrap matches in the overlay highlight span.
+
+    FTS5 snippet() output wraps each actual matched token — possibly a
+    stem rather than the literal query — in \x02...\x03; when present,
+    those markers are rendered as the highlight. Otherwise every
+    case-insensitive literal query match is highlighted."""
+    if '\x02' in text and '\x03' in text:
+        return _MARKER_RE.sub(_HIGHLIGHT_SPAN + r'\1</span>',
+                              html.escape(text))
     if not query:
         return html.escape(text)
     out = []
@@ -352,8 +423,8 @@ def _highlight_html(text, query):
             out.append(html.escape(text[start:]))
             break
         out.append(html.escape(text[start:idx]))
-        out.append(f'<span style="background-color:#FFEB3B;color:#000000;'
-                   f'font-weight:600;">{html.escape(text[idx:idx + len(q)])}</span>')
+        out.append(f'{_HIGHLIGHT_SPAN}{html.escape(text[idx:idx + len(q)])}'
+                   f'</span>')
         start = idx + len(q)
     return ''.join(out)
 
@@ -519,7 +590,7 @@ class _RichLabel(QLabel):
 
 class _ResultRow(QWidget):
     def __init__(self, result, query, panel_width, on_activate, parent=None):
-        """result: (path, filename, fulltext, rank)."""
+        """result: (path, filename, snippet, rank)."""
         super().__init__(parent)
         self._result = result
         self._query = query
@@ -529,9 +600,8 @@ class _ResultRow(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAutoFillBackground(False)
 
-        path, filename, fulltext, rank = result
+        path, filename, snippet, rank = result
         text_width = max(60, panel_width - 12 * 2 - 28 - 12)
-        snippet = make_snippet(fulltext, query) if rank <= 3 else ''
 
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 12, 12, 12)

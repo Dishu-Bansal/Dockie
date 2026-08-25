@@ -215,7 +215,10 @@ def file_exists(conn, path):
 # when the DB predates FTS5 (files_fts missing, e.g. never migrated).
 # Both rank cheaply first (rowid/ids only) and only then join back to
 # `files` for the text of the final LIMIT rows — carrying every matched
-# row's fulltext through the ranking sort is the dominant cost.
+# row's fulltext through the ranking sort is the dominant cost. FTS5
+# snippets are computed separately (_FTS_SNIPPET_SQL) only for the rows
+# that survive the LIMIT: snippet() reads the matched rows' text, so
+# computing it for every match dominates the query.
 _FTS_SEARCH_SQL = '''
     SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
     FROM (
@@ -240,6 +243,17 @@ _FTS_SEARCH_SQL = '''
     ) r
     JOIN files f ON f.path = r.path
     ORDER BY r.rank, r.filename
+'''
+
+# Snippet around the match for the surviving content matches. Matched
+# tokens (possibly stems, not the literal query) are wrapped in
+# char(2)/char(3) markers so the UI can highlight exactly what matched.
+_FTS_SNIPPET_SQL = '''
+    SELECT f.path, snippet(files_fts, 1, char(2), char(3), ' … ', 12)
+    FROM files_fts
+    JOIN files f ON f.rowid = files_fts.rowid
+    WHERE files_fts MATCH ?
+      AND f.path IN (%s)
 '''
 
 _LIKE_SEARCH_SQL = '''
@@ -281,6 +295,20 @@ def _fts_enabled(conn):
     return row is not None
 
 
+def _fetch_snippets(conn, match, paths):
+    """FTS5 snippets for the given content-matched paths: {path: snippet}.
+
+    snippet() re-tokenizes the matched rows' text, so it is restricted to
+    the rows the literal-find snippet cannot explain (search() passes only
+    the surviving rank-3 paths it failed on). Matched tokens are wrapped
+    in \x02/\x03 markers."""
+    if not paths:
+        return {}
+    marks = ','.join('?' for _ in paths)
+    return dict(conn.execute(
+        _FTS_SNIPPET_SQL % marks, (match, *paths)).fetchall())
+
+
 def search(conn, query, limit=20):
     """Search indexed files by filename and content. Returns ranked results.
     Each result: (path, filename, snippet, rank) — lower rank = better match."""
@@ -290,20 +318,40 @@ def search(conn, query, limit=20):
 
     prefix = f'{q}%'
     contains = f'%{q}%'
-    if _fts_enabled(conn):
-        sql, params = _FTS_SEARCH_SQL, (prefix, contains, fts5_match(q), limit)
-    else:
-        sql, params = _LIKE_SEARCH_SQL, (prefix, contains, contains,
-                                         contains, contains, limit)
+    match = fts5_match(q)
     try:
-        rows = conn.execute(sql, params).fetchall()
+        if _fts_enabled(conn):
+            fts_path = True
+            rows = conn.execute(
+                _FTS_SEARCH_SQL, (prefix, contains, match, limit)).fetchall()
+            # Literal-find snippets are cheap; FTS5's snippet() has to
+            # re-tokenize the matched row's text, so reserve it for rows
+            # the literal find cannot explain (stems, multi-word AND,
+            # filename-column matches).
+            snips = {}
+            need_fts = []
+            for path, filename, fulltext, rank in rows:
+                if rank == 3:
+                    lit = _make_snippet(fulltext, q)
+                    if lit:
+                        snips[path] = lit
+                    else:
+                        need_fts.append(path)
+            snips.update(_fetch_snippets(conn, match, need_fts))
+        else:
+            fts_path = False
+            rows = conn.execute(
+                _LIKE_SEARCH_SQL, (prefix, contains, contains,
+                                   contains, contains, limit)).fetchall()
+            snips = {}
     except Exception:
         applog.log_exc(f'DB: search failed for query {q!r}')
         return []
 
     results = []
     for path, filename, fulltext, rank in rows:
-        snippet = _make_snippet(fulltext, q)
+        snippet = (snips.get(path) or '') if fts_path and rank == 3 else (
+            _make_snippet(fulltext, q) if rank <= 3 else '')
         results.append((path, filename, snippet, rank))
     return results
 
