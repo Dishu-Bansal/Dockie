@@ -118,19 +118,54 @@ HINT_TEXT = 'What file are you looking for?'
 NOT_READY_TITLE = 'Index not ready'
 NOT_READY_SUBTITLE = 'The PDF index is still being built. Please wait.'
 
+# Content search drives off the FTS5 index (created by db._migrate_fts);
+# SEARCH_SQL is the fallback for databases that predate FTS5. Both rank
+# cheaply first and only then join back to `files` for the text of the
+# final LIMIT rows, so matched fulltext never rides through the sort.
+FTS_SEARCH_SQL = """
+SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
+FROM (
+    SELECT path, filename, MIN(rank) AS rank
+    FROM (
+        SELECT f.path, f.filename, 1 AS rank
+        FROM files f
+        WHERE f.filename LIKE ?
+        UNION ALL
+        SELECT f.path, f.filename, 2 AS rank
+        FROM files f
+        WHERE f.filename LIKE ?
+        UNION ALL
+        SELECT f.path, f.filename, 3 AS rank
+        FROM files_fts
+        JOIN files f ON f.rowid = files_fts.rowid
+        WHERE files_fts MATCH ?
+    )
+    GROUP BY path, filename
+    ORDER BY rank, filename
+    LIMIT ?
+) r
+JOIN files f ON f.path = r.path
+ORDER BY r.rank, r.filename
+"""
+
 SEARCH_SQL = """
-SELECT path, filename, COALESCE(text, '') AS text,
-       CASE
-           WHEN filename LIKE ? THEN 1
-           WHEN filename LIKE ? THEN 2
-           WHEN text IS NOT NULL AND text LIKE ? THEN 3
-           ELSE 4
-       END AS rank
-FROM files
-WHERE filename LIKE ?
-   OR (text IS NOT NULL AND text LIKE ?)
-ORDER BY rank, filename
-LIMIT ?
+SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
+FROM (
+    SELECT path, filename,
+           CASE
+               WHEN filename LIKE ? THEN 1
+               WHEN filename LIKE ? THEN 2
+               WHEN text IS NOT NULL AND text LIKE ? THEN 3
+               ELSE 4
+           END AS rank
+    FROM files
+    WHERE filename LIKE ?
+       OR (text IS NOT NULL AND text LIKE ?)
+    ORDER BY rank, filename
+    LIMIT ?
+) r
+JOIN files f ON f.path = r.path
+ORDER BY r.rank, r.filename
 """
 
 
@@ -150,6 +185,24 @@ def db_ready():
     return os.path.exists(db_path())
 
 
+def fts5_match(query):
+    """Build a safe FTS5 MATCH expression from free-text input.
+
+    Each whitespace-separated term is quoted (embedded quotes doubled) so
+    FTS5 operators ('-', '*', ':', parentheses, ...) typed by the user are
+    treated literally; terms are ANDed, which is FTS5's default connector
+    for a space-separated list."""
+    return ' '.join(f'"{term.replace(chr(34), chr(34) * 2)}"'
+                    for term in query.split())
+
+
+def _fts_available(conn):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files_fts'"
+    ).fetchone()
+    return row is not None
+
+
 def search(query):
     """Run a query against the index DB. Returns a list of
     (path, filename, fulltext, rank) tuples, or None if the DB is missing."""
@@ -158,18 +211,25 @@ def search(query):
         return []
     if not db_ready():
         return None
-    like_prefix = f'{q}%'
-    like_contains = f'%{q}%'
+    prefix = f'{q}%'
+    contains = f'%{q}%'
+    match = fts5_match(q)
     try:
         # Fresh connection per query so we always see the latest committed
         # rows (the backend writes from another process).
         conn = sqlite3.connect(db_path())
         try:
-            rows = conn.execute(
-                SEARCH_SQL,
-                (like_prefix, like_contains, like_contains,
-                 like_contains, like_contains, SEARCH_LIMIT),
-            ).fetchall()
+            if _fts_available(conn):
+                rows = conn.execute(
+                    FTS_SEARCH_SQL,
+                    (prefix, contains, match, SEARCH_LIMIT),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    SEARCH_SQL,
+                    (prefix, contains, contains, contains, contains,
+                     SEARCH_LIMIT),
+                ).fetchall()
         finally:
             conn.close()
         return [(r[0], r[1], r[2], r[3]) for r in rows]

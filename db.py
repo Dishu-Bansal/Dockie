@@ -24,6 +24,37 @@ DATA_DIR = _data_dir()
 DB_DIR = DATA_DIR
 DB_PATH = os.path.join(DB_DIR, 'index.db')
 
+# FTS5 virtual table backing content search: an external-content index over
+# `files` (see https://sqlite.org/fts5.html#external_content_tables). The
+# triggers below keep it in sync with insert/update/delete on `files`, and
+# the special 'rebuild' command backfills it from the content table during
+# migration.
+_FTS_TABLE_SQL = '''
+CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+    filename, text,
+    content='files',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+)
+'''
+
+_FTS_TRIGGER_SQL = [
+    '''CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+        INSERT INTO files_fts(rowid, filename, text)
+        VALUES (new.rowid, new.filename, COALESCE(new.text, ''));
+    END''',
+    '''CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, filename, text)
+        VALUES ('delete', old.rowid, old.filename, COALESCE(old.text, ''));
+    END''',
+    '''CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+        INSERT INTO files_fts(files_fts, rowid, filename, text)
+        VALUES ('delete', old.rowid, old.filename, COALESCE(old.text, ''));
+        INSERT INTO files_fts(rowid, filename, text)
+        VALUES (new.rowid, new.filename, COALESCE(new.text, ''));
+    END''',
+]
+
 
 def get_conn():
     """Return a connection. Each thread must call this — SQLite connections are NOT thread-safe."""
@@ -49,12 +80,34 @@ def init_db(conn):
             scanned_at REAL,
             indexed_at REAL
         )''')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_files_text ON files(text)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_files_scanned ON files(scanned_at)')
+        _migrate_fts(conn)
         conn.commit()
     except Exception:
         applog.log_exc('DB: failed to initialize schema')
         raise
+
+
+def _migrate_fts(conn):
+    """Create the FTS5 content index (once) and backfill it from `files`.
+
+    PRAGMA user_version gates the migration so existing databases are
+    upgraded in place. 'rebuild' repopulates the whole index from the
+    content table — the triggers only cover rows written afterwards.
+    """
+    try:
+        if conn.execute('PRAGMA user_version').fetchone()[0] >= 1:
+            return
+        conn.execute(_FTS_TABLE_SQL)
+        for trigger in _FTS_TRIGGER_SQL:
+            conn.execute(trigger)
+        conn.execute("INSERT INTO files_fts(files_fts) VALUES ('rebuild')")
+        # The old btree index on files(text) never helped — leading-wildcard
+        # LIKE can't use it — and content search is FTS5's job now.
+        conn.execute('DROP INDEX IF EXISTS idx_files_text')
+        conn.execute('PRAGMA user_version = 1')
+    except Exception:
+        applog.log_exc('DB: FTS5 unavailable — content search falls back to LIKE')
 
 
 def insert_scan_result(conn, path):
@@ -158,6 +211,76 @@ def file_exists(conn, path):
     return row is not None
 
 
+# Content search drives off the FTS5 index; the LIKE version is only used
+# when the DB predates FTS5 (files_fts missing, e.g. never migrated).
+# Both rank cheaply first (rowid/ids only) and only then join back to
+# `files` for the text of the final LIMIT rows — carrying every matched
+# row's fulltext through the ranking sort is the dominant cost.
+_FTS_SEARCH_SQL = '''
+    SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
+    FROM (
+        SELECT path, filename, MIN(rank) AS rank
+        FROM (
+            SELECT f.path, f.filename, 1 AS rank
+            FROM files f
+            WHERE f.filename LIKE ?
+            UNION ALL
+            SELECT f.path, f.filename, 2 AS rank
+            FROM files f
+            WHERE f.filename LIKE ?
+            UNION ALL
+            SELECT f.path, f.filename, 3 AS rank
+            FROM files_fts
+            JOIN files f ON f.rowid = files_fts.rowid
+            WHERE files_fts MATCH ?
+        )
+        GROUP BY path, filename
+        ORDER BY rank, filename
+        LIMIT ?
+    ) r
+    JOIN files f ON f.path = r.path
+    ORDER BY r.rank, r.filename
+'''
+
+_LIKE_SEARCH_SQL = '''
+    SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
+    FROM (
+        SELECT path, filename,
+               CASE
+                   WHEN filename LIKE ? THEN 1
+                   WHEN filename LIKE ? THEN 2
+                   WHEN text IS NOT NULL AND text LIKE ? THEN 3
+                   ELSE 4
+               END AS rank
+        FROM files
+        WHERE filename LIKE ?
+           OR (text IS NOT NULL AND text LIKE ?)
+        ORDER BY rank, filename
+        LIMIT ?
+    ) r
+    JOIN files f ON f.path = r.path
+    ORDER BY r.rank, r.filename
+'''
+
+
+def fts5_match(query):
+    """Build a safe FTS5 MATCH expression from free-text input.
+
+    Each whitespace-separated term is quoted (embedded quotes doubled) so
+    FTS5 operators ('-', '*', ':', parentheses, ...) typed by the user are
+    treated literally; terms are ANDed, which is FTS5's default connector
+    for a space-separated list."""
+    return ' '.join(f'"{term.replace(chr(34), chr(34) * 2)}"'
+                    for term in query.split())
+
+
+def _fts_enabled(conn):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files_fts'"
+    ).fetchone()
+    return row is not None
+
+
 def search(conn, query, limit=20):
     """Search indexed files by filename and content. Returns ranked results.
     Each result: (path, filename, snippet, rank) — lower rank = better match."""
@@ -165,29 +288,21 @@ def search(conn, query, limit=20):
     if not q:
         return []
 
+    prefix = f'{q}%'
+    contains = f'%{q}%'
+    if _fts_enabled(conn):
+        sql, params = _FTS_SEARCH_SQL, (prefix, contains, fts5_match(q), limit)
+    else:
+        sql, params = _LIKE_SEARCH_SQL, (prefix, contains, contains,
+                                         contains, contains, limit)
     try:
-        like = f'%{q}%'
-        rows = conn.execute('''
-            SELECT path, filename,
-                   CASE
-                       WHEN filename LIKE ? THEN 1
-                       WHEN filename LIKE ? THEN 2
-                       WHEN text IS NOT NULL AND text LIKE ? THEN 3
-                       ELSE 4
-                   END AS rank,
-                   COALESCE(text, '') AS fulltext
-            FROM files
-            WHERE filename LIKE ?
-               OR (text IS NOT NULL AND text LIKE ?)
-            ORDER BY rank, filename
-            LIMIT ?
-        ''', (f'{q}%', like, like, like, like, limit)).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     except Exception:
         applog.log_exc(f'DB: search failed for query {q!r}')
         return []
 
     results = []
-    for path, filename, rank, fulltext in rows:
+    for path, filename, fulltext, rank in rows:
         snippet = _make_snippet(fulltext, q)
         results.append((path, filename, snippet, rank))
     return results
