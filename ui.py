@@ -18,13 +18,15 @@ import os
 import sqlite3
 import subprocess
 import sys
-import time
 
 from PyQt6.QtCore import (
     Qt,
     QTimer,
     QEasingCurve,
     QPropertyAnimation,
+    QObject,
+    QRunnable,
+    QThreadPool,
     QPointF,
     QRectF,
     QSize,
@@ -191,6 +193,35 @@ def make_snippet(text, query, context=80):
     if end < len(text):
         snip = snip + '\u2026'
     return snip
+
+
+# ---------------------------------------------------------------------------
+# Async search (worker thread)
+# ---------------------------------------------------------------------------
+
+class _SearchSignals(QObject):
+    """Signals from a search worker to the overlay (main thread)."""
+    finished = pyqtSignal(int, object)  # generation, results (list | None)
+    failed = pyqtSignal(int, str)       # generation, error message
+
+
+class _SearchWorker(QRunnable):
+    """Runs one SQLite query on a QThreadPool thread so the Qt main thread
+    (and with it the overlay, typing, animations) never blocks on the DB."""
+
+    def __init__(self, generation, query):
+        super().__init__()
+        self.generation = generation
+        self.query = query
+        self.signals = _SearchSignals()
+
+    def run(self):
+        try:
+            results = search(self.query)
+        except Exception as exc:
+            self.signals.failed.emit(self.generation, str(exc))
+            return
+        self.signals.finished.emit(self.generation, results)
 
 
 # ---------------------------------------------------------------------------
@@ -820,6 +851,13 @@ class SearchOverlay(QWidget):
         self._debounce.timeout.connect(self._perform_search)
         self.panel.edit.textChanged.connect(self._on_search_changed)
 
+        # Async search: queries run on QThreadPool threads; a generation
+        # counter tags each query so a slow, outdated result is discarded
+        # instead of overwriting the results of a newer keystroke.
+        self._search_pool = QThreadPool.globalInstance()
+        self._search_generation = 0
+        self._search_workers = {}  # generation -> worker, alive until handled
+
         self._not_ready = None
         if not db_ready():
             self.log(f'DB not found at {db_path()}; showing index-not-ready',
@@ -912,6 +950,9 @@ class SearchOverlay(QWidget):
     # --- search ---
 
     def _on_search_changed(self, text):
+        # Every keystroke advances the generation, immediately invalidating
+        # any in-flight query for older text.
+        self._search_generation += 1
         if not text.strip():
             self._debounce.stop()
             self.panel.set_results([], '')
@@ -931,16 +972,31 @@ class SearchOverlay(QWidget):
         query = self.panel.edit.text().strip()
         if not query:
             return
-        start = time.time()
-        results = search(query)
-        elapsed_ms = int((time.time() - start) * 1000)
+        generation = self._search_generation
+        worker = _SearchWorker(generation, query)
+        worker.signals.finished.connect(self._on_search_finished)
+        worker.signals.failed.connect(self._on_search_failed)
+        self._search_workers[generation] = worker
+        self._search_pool.start(worker)
+
+    def _on_search_finished(self, generation, results):
+        self._search_workers.pop(generation, None)
+        if generation != self._search_generation:
+            print(f'Search: discarding stale results (gen {generation})')
+            return
+        query = self.panel.edit.text().strip()
         if results is None:
             print(f'Search: DB missing for query "{query}"')
             self.panel.set_results([], '')
             return
-        print(f'Search: "{query}" -> {len(results)} results in '
-              f'{elapsed_ms} ms')
+        print(f'Search: "{query}" -> {len(results)} results')
         self.panel.set_results(results, query)
+
+    def _on_search_failed(self, generation, message):
+        self._search_workers.pop(generation, None)
+        if generation != self._search_generation:
+            return
+        print(f'Search failed: {message}')
 
     # --- actions ---
 
