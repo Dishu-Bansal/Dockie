@@ -15,16 +15,19 @@ DB resolution (first match wins):
 import datetime
 import html
 import os
+import re
 import sqlite3
 import subprocess
 import sys
-import time
 
 from PyQt6.QtCore import (
     Qt,
     QTimer,
     QEasingCurve,
     QPropertyAnimation,
+    QObject,
+    QRunnable,
+    QThreadPool,
     QPointF,
     QRectF,
     QSize,
@@ -116,19 +119,69 @@ HINT_TEXT = 'What file are you looking for?'
 NOT_READY_TITLE = 'Index not ready'
 NOT_READY_SUBTITLE = 'The PDF index is still being built. Please wait.'
 
+# Content search drives off the FTS5 index (created by db._migrate_fts);
+# SEARCH_SQL is the fallback for databases that predate FTS5. Both rank
+# cheaply first and only then join back to `files` for the text of the
+# final LIMIT rows, so matched fulltext never rides through the sort.
+# Snippets for content matches are computed separately (FTS_SNIPPET_SQL)
+# only for the rows that survive the LIMIT: FTS5's snippet() needs to
+# read the matched rows' text, so computing it for every match (not just
+# the top rows) dominates the query.
+FTS_SEARCH_SQL = """
+SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
+FROM (
+    SELECT path, filename, MIN(rank) AS rank
+    FROM (
+        SELECT f.path, f.filename, 1 AS rank
+        FROM files f
+        WHERE f.filename LIKE ?
+        UNION ALL
+        SELECT f.path, f.filename, 2 AS rank
+        FROM files f
+        WHERE f.filename LIKE ?
+        UNION ALL
+        SELECT f.path, f.filename, 3 AS rank
+        FROM files_fts
+        JOIN files f ON f.rowid = files_fts.rowid
+        WHERE files_fts MATCH ?
+    )
+    GROUP BY path, filename
+    ORDER BY rank, filename
+    LIMIT ?
+) r
+JOIN files f ON f.path = r.path
+ORDER BY r.rank, r.filename
+"""
+
+# Snippet around the match for the surviving content matches. Matched
+# tokens (possibly stems, not the literal query) are wrapped in
+# char(2)/char(3) markers so the UI can highlight exactly what matched.
+FTS_SNIPPET_SQL = """
+SELECT f.path, snippet(files_fts, 1, char(2), char(3), ' … ', 12)
+FROM files_fts
+JOIN files f ON f.rowid = files_fts.rowid
+WHERE files_fts MATCH ?
+  AND f.path IN (%s)
+"""
+
 SEARCH_SQL = """
-SELECT path, filename, COALESCE(text, '') AS text,
-       CASE
-           WHEN filename LIKE ? THEN 1
-           WHEN filename LIKE ? THEN 2
-           WHEN text IS NOT NULL AND text LIKE ? THEN 3
-           ELSE 4
-       END AS rank
-FROM files
-WHERE filename LIKE ?
-   OR (text IS NOT NULL AND text LIKE ?)
-ORDER BY rank, filename
-LIMIT ?
+SELECT r.path, r.filename, COALESCE(f.text, '') AS fulltext, r.rank
+FROM (
+    SELECT path, filename,
+           CASE
+               WHEN filename LIKE ? THEN 1
+               WHEN filename LIKE ? THEN 2
+               WHEN text IS NOT NULL AND text LIKE ? THEN 3
+               ELSE 4
+           END AS rank
+    FROM files
+    WHERE filename LIKE ?
+       OR (text IS NOT NULL AND text LIKE ?)
+    ORDER BY rank, filename
+    LIMIT ?
+) r
+JOIN files f ON f.path = r.path
+ORDER BY r.rank, r.filename
 """
 
 
@@ -148,29 +201,97 @@ def db_ready():
     return os.path.exists(db_path())
 
 
+def fts5_match(query):
+    """Build a safe FTS5 MATCH expression from free-text input.
+
+    Each whitespace-separated term is quoted (embedded quotes doubled) so
+    FTS5 operators ('-', '*', ':', parentheses, ...) typed by the user are
+    treated literally; terms are ANDed, which is FTS5's default connector
+    for a space-separated list."""
+    return ' '.join(f'"{term.replace(chr(34), chr(34) * 2)}"'
+                    for term in query.split())
+
+
+def _fetch_snippets(conn, match, paths):
+    """FTS5 snippets for the given content-matched paths: {path: snippet}.
+
+    snippet() re-tokenizes the matched rows' text, so it is restricted to
+    the rows the literal-find snippet cannot explain (search() passes only
+    the surviving rank-3 paths it failed on). Matched tokens are wrapped
+    in \\x02/\\x03 markers."""
+    if not paths:
+        return {}
+    marks = ','.join('?' for _ in paths)
+    return dict(conn.execute(
+        FTS_SNIPPET_SQL % marks, (match, *paths)).fetchall())
+
+
+def _fts_available(conn):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files_fts'"
+    ).fetchone()
+    return row is not None
+
+
 def search(query):
     """Run a query against the index DB. Returns a list of
-    (path, filename, fulltext, rank) tuples, or None if the DB is missing."""
+    (path, filename, snippet, rank) tuples, or None if the DB is missing.
+    The snippet is FTS5's own fragment around the match (matched tokens
+    wrapped in \x02/\x03 markers for highlighting), falling back to a
+    literal-find snippet for filename matches and pre-FTS5 databases."""
     q = query.strip()
     if not q:
         return []
     if not db_ready():
         return None
-    like_prefix = f'{q}%'
-    like_contains = f'%{q}%'
+    prefix = f'{q}%'
+    contains = f'%{q}%'
+    match = fts5_match(q)
     try:
         # Fresh connection per query so we always see the latest committed
         # rows (the backend writes from another process).
         conn = sqlite3.connect(db_path())
         try:
-            rows = conn.execute(
-                SEARCH_SQL,
-                (like_prefix, like_contains, like_contains,
-                 like_contains, like_contains, SEARCH_LIMIT),
-            ).fetchall()
+            if _fts_available(conn):
+                fts_path = True
+                rows = conn.execute(
+                    FTS_SEARCH_SQL,
+                    (prefix, contains, match, SEARCH_LIMIT),
+                ).fetchall()
+                # Literal-find snippets are cheap; FTS5's snippet() has to
+                # re-tokenize the matched row's text, so reserve it for
+                # rows the literal find cannot explain (stems, multi-word
+                # AND, filename-column matches).
+                snips = {}
+                need_fts = []
+                for path, filename, fulltext, rank in rows:
+                    if rank == 3:
+                        lit = make_snippet(fulltext, q)
+                        if lit:
+                            snips[path] = lit
+                        else:
+                            need_fts.append(path)
+                snips.update(_fetch_snippets(conn, match, need_fts))
+            else:
+                fts_path = False
+                rows = conn.execute(
+                    SEARCH_SQL,
+                    (prefix, contains, contains, contains, contains,
+                     SEARCH_LIMIT),
+                ).fetchall()
+                snips = {}
         finally:
             conn.close()
-        return [(r[0], r[1], r[2], r[3]) for r in rows]
+        results = []
+        for path, filename, fulltext, rank in rows:
+            # Rank 3 = content match: prefer FTS5's marked snippet, then
+            # the literal-find one. Filename matches and the LIKE fallback
+            # keep the literal-find snippet (may be empty when the text has
+            # no match).
+            snippet = (snips.get(path) or '') if fts_path and rank == 3 else (
+                make_snippet(fulltext, q) if rank <= 3 else '')
+            results.append((path, filename, snippet, rank))
+        return results
     except Exception:
         return []
 
@@ -191,6 +312,35 @@ def make_snippet(text, query, context=80):
     if end < len(text):
         snip = snip + '\u2026'
     return snip
+
+
+# ---------------------------------------------------------------------------
+# Async search (worker thread)
+# ---------------------------------------------------------------------------
+
+class _SearchSignals(QObject):
+    """Signals from a search worker to the overlay (main thread)."""
+    finished = pyqtSignal(int, object)  # generation, results (list | None)
+    failed = pyqtSignal(int, str)       # generation, error message
+
+
+class _SearchWorker(QRunnable):
+    """Runs one SQLite query on a QThreadPool thread so the Qt main thread
+    (and with it the overlay, typing, animations) never blocks on the DB."""
+
+    def __init__(self, generation, query):
+        super().__init__()
+        self.generation = generation
+        self.query = query
+        self.signals = _SearchSignals()
+
+    def run(self):
+        try:
+            results = search(self.query)
+        except Exception as exc:
+            self.signals.failed.emit(self.generation, str(exc))
+            return
+        self.signals.finished.emit(self.generation, results)
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +396,21 @@ def _clip_lines(text, font, max_width, max_lines):
     return keep
 
 
+_HIGHLIGHT_SPAN = ('<span style="background-color:#FFEB3B;color:#000000;'
+                   'font-weight:600;">')
+_MARKER_RE = re.compile(r'\x02(.*?)\x03')
+
+
 def _highlight_html(text, query):
-    """Escape text and wrap every case-insensitive query match in the
-    overlay highlight span."""
+    """Escape text and wrap matches in the overlay highlight span.
+
+    FTS5 snippet() output wraps each actual matched token — possibly a
+    stem rather than the literal query — in \x02...\x03; when present,
+    those markers are rendered as the highlight. Otherwise every
+    case-insensitive literal query match is highlighted."""
+    if '\x02' in text and '\x03' in text:
+        return _MARKER_RE.sub(_HIGHLIGHT_SPAN + r'\1</span>',
+                              html.escape(text))
     if not query:
         return html.escape(text)
     out = []
@@ -261,8 +423,8 @@ def _highlight_html(text, query):
             out.append(html.escape(text[start:]))
             break
         out.append(html.escape(text[start:idx]))
-        out.append(f'<span style="background-color:#FFEB3B;color:#000000;'
-                   f'font-weight:600;">{html.escape(text[idx:idx + len(q)])}</span>')
+        out.append(f'{_HIGHLIGHT_SPAN}{html.escape(text[idx:idx + len(q)])}'
+                   f'</span>')
         start = idx + len(q)
     return ''.join(out)
 
@@ -428,7 +590,7 @@ class _RichLabel(QLabel):
 
 class _ResultRow(QWidget):
     def __init__(self, result, query, panel_width, on_activate, parent=None):
-        """result: (path, filename, fulltext, rank)."""
+        """result: (path, filename, snippet, rank)."""
         super().__init__(parent)
         self._result = result
         self._query = query
@@ -438,9 +600,8 @@ class _ResultRow(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAutoFillBackground(False)
 
-        path, filename, fulltext, rank = result
+        path, filename, snippet, rank = result
         text_width = max(60, panel_width - 12 * 2 - 28 - 12)
-        snippet = make_snippet(fulltext, query) if rank <= 3 else ''
 
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 12, 12, 12)
@@ -811,11 +972,21 @@ class SearchOverlay(QWidget):
         root.addLayout(center)
         root.addStretch(1)
 
+        # Search fires only after the user pauses typing: every keystroke
+        # restarts this single-shot timer (see _schedule_search), so the
+        # query runs at most once per SEARCH_DEBOUNCE_MS of silence.
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(SEARCH_DEBOUNCE_MS)
         self._debounce.timeout.connect(self._perform_search)
         self.panel.edit.textChanged.connect(self._on_search_changed)
+
+        # Async search: queries run on QThreadPool threads; a generation
+        # counter tags each query so a slow, outdated result is discarded
+        # instead of overwriting the results of a newer keystroke.
+        self._search_pool = QThreadPool.globalInstance()
+        self._search_generation = 0
+        self._search_workers = {}  # generation -> worker, alive until handled
 
         self._not_ready = None
         if not db_ready():
@@ -909,26 +1080,53 @@ class SearchOverlay(QWidget):
     # --- search ---
 
     def _on_search_changed(self, text):
+        # Every keystroke advances the generation, immediately invalidating
+        # any in-flight query for older text.
+        self._search_generation += 1
         if not text.strip():
             self._debounce.stop()
             self.panel.set_results([], '')
             return
+        self._schedule_search()
+
+    def _schedule_search(self):
+        """(Re)start the pause timer.
+
+        A query only fires once the user has been idle for
+        SEARCH_DEBOUNCE_MS — never on every keystroke. This is the single
+        scheduling entry point the async pipeline hangs off.
+        """
         self._debounce.start()
 
     def _perform_search(self):
         query = self.panel.edit.text().strip()
         if not query:
             return
-        start = time.time()
-        results = search(query)
-        elapsed_ms = int((time.time() - start) * 1000)
+        generation = self._search_generation
+        worker = _SearchWorker(generation, query)
+        worker.signals.finished.connect(self._on_search_finished)
+        worker.signals.failed.connect(self._on_search_failed)
+        self._search_workers[generation] = worker
+        self._search_pool.start(worker)
+
+    def _on_search_finished(self, generation, results):
+        self._search_workers.pop(generation, None)
+        if generation != self._search_generation:
+            print(f'Search: discarding stale results (gen {generation})')
+            return
+        query = self.panel.edit.text().strip()
         if results is None:
             print(f'Search: DB missing for query "{query}"')
             self.panel.set_results([], '')
             return
-        print(f'Search: "{query}" -> {len(results)} results in '
-              f'{elapsed_ms} ms')
+        print(f'Search: "{query}" -> {len(results)} results')
         self.panel.set_results(results, query)
+
+    def _on_search_failed(self, generation, message):
+        self._search_workers.pop(generation, None)
+        if generation != self._search_generation:
+            return
+        print(f'Search failed: {message}')
 
     # --- actions ---
 
