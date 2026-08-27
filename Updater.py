@@ -20,9 +20,9 @@ import urllib.error
 import urllib.request
 
 # ── Hardcoded configuration ──
-GITHUB_REPO = 'Dishu-Bansal/FileFinder'
+GITHUB_REPO = 'Dishu-Bansal/Dockie'
 # Keep in sync with the release tag: tag 'v1.0.0' <-> VERSION '1.0.0'.
-VERSION = '1.0.1'
+VERSION = '1.0.0'
 # Release assets are Inno Setup installers named dockie_setup_<version>.exe.
 RELEASE_ASSET_PREFIX = 'dockie_setup_'
 RELEASES_LATEST_URL = (

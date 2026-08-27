@@ -14,7 +14,7 @@ export const GITHUB_URL = `https://github.com/${GITHUB_REPO}`;
 // today's known installer. The runtime fetch replaces this URL as soon as a
 // release with a dockie_setup_*.exe asset is live.
 export const DOWNLOAD_FALLBACK_URL =
-  "https://github.com/Dishu-Bansal/Dockie/releases/latest/download/dockie_setup_v101.exe";
-export const DEFAULT_VERSION = "1.0.1";
+  "https://github.com/Dishu-Bansal/Dockie/releases/latest/download/dockie_setup_v100.exe";
+export const DEFAULT_VERSION = "1.0.0";
 export const DEFAULT_SIZE_MB = "62";
 export const DATA_DIR = "~/.dockie";
