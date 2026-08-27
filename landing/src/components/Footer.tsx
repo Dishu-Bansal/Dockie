@@ -1,5 +1,6 @@
 import { WindowsLogo } from "@phosphor-icons/react";
-import { DOWNLOAD_URL, GITHUB_URL } from "../site";
+import { GITHUB_URL } from "../site";
+import { useLatestRelease } from "../lib/release";
 import dockieLogo from "../assets/dockie-logo.png";
 
 const SITE_LINKS = [
@@ -9,6 +10,7 @@ const SITE_LINKS = [
 ];
 
 export function Footer() {
+  const { url } = useLatestRelease();
   return (
     <footer className="border-t border-line">
       <div className="mx-auto flex max-w-6xl flex-col gap-10 px-5 py-14 sm:flex-row sm:items-start sm:justify-between lg:px-8">
@@ -44,7 +46,7 @@ export function Footer() {
           </nav>
           <nav className="flex flex-col gap-3" aria-label="Project">
             <a
-              href={DOWNLOAD_URL}
+              href={url}
               target="_blank"
               rel="noreferrer"
               className="text-[13.5px] text-muted transition-colors hover:text-fg"

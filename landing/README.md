@@ -39,6 +39,10 @@ npm run preview    # serve the production build locally
   component (typing demo + highlighted results), not a fake screenshot.
 - **Motion:** respects `prefers-reduced-motion` everywhere; only `transform`
   and `opacity` are animated.
+- **Live download resolution:** the download CTAs fetch the latest GitHub
+  release at runtime and link straight to the newest `dockie_setup_*.exe`
+  asset (version and size update too). While the fetch is in flight or when
+  no release is published, a known installer URL is used as fallback.
 
 ## Deployment
 

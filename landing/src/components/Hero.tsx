@@ -1,7 +1,7 @@
 import { motion, useReducedMotion, type Variants } from "motion/react";
 import { ArrowRight, DownloadSimple } from "@phosphor-icons/react";
 import { SearchOverlay } from "./SearchOverlay";
-import { DOWNLOAD_URL } from "../site";
+import { useLatestRelease } from "../lib/release";
 
 const container: Variants = {
   hidden: {},
@@ -19,6 +19,7 @@ const item: Variants = {
 
 export function Hero() {
   const reduce = useReducedMotion();
+  const { url } = useLatestRelease();
 
   return (
     <section
@@ -88,7 +89,7 @@ export function Hero() {
           {/* 4. CTAs */}
           <motion.div variants={item} className="mt-9 flex flex-wrap gap-3">
             <a
-              href={DOWNLOAD_URL}
+              href={url}
               target="_blank"
               rel="noreferrer"
               className="inline-flex h-11 items-center gap-2 rounded-full bg-beam px-6 text-sm font-semibold text-beam-ink transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-beam-strong active:translate-y-0 active:scale-[0.98]"
