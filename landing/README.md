@@ -46,3 +46,14 @@ npm run preview    # serve the production build locally
 relative thanks to `base: "./"`). Drop it on GitHub Pages, Netlify, or any
 static host. The only external request is the one atmospheric photo in the
 privacy section (Picsum seed), which has a solid fallback color underneath.
+
+### GitHub Pages (automated)
+
+`.github/workflows/deploy-landing.yml` builds and deploys `landing/` to
+GitHub Pages whenever `landing/**` changes on `main` (or on manual
+`workflow_dispatch`).
+
+One-time repo setup: **Settings → Pages → Build and deployment → Source:
+"GitHub Actions"**. The site then lives at the project-page subpath
+(`https://<owner>.github.io/Dockie/`), which the relative `base: "./"`
+handles automatically.
