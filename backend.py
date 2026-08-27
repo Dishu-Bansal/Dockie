@@ -593,11 +593,11 @@ _bridge = None  # Qt signal bridge for tray -> window (set once in main())
 
 
 def _make_tray_icon():
-    """Tray icon: robot.ico when available, else a generated fallback."""
+    """Tray icon: logo.ico when available, else a generated fallback."""
     if getattr(sys, 'frozen', False):
-        path = os.path.join(sys._MEIPASS, 'robot.ico')
+        path = os.path.join(sys._MEIPASS, 'logo.ico')
     else:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'robot.ico')
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo.ico')
     if os.path.exists(path):
         try:
             return Image.open(path).convert('RGBA')

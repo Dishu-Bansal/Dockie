@@ -1,5 +1,6 @@
-import { MagnifyingGlass, WindowsLogo } from "@phosphor-icons/react";
+import { WindowsLogo } from "@phosphor-icons/react";
 import { DOWNLOAD_URL, GITHUB_URL } from "../site";
+import dockieLogo from "../assets/dockie-logo.png";
 
 const SITE_LINKS = [
   { label: "Features", href: "#features" },
@@ -13,9 +14,13 @@ export function Footer() {
       <div className="mx-auto flex max-w-6xl flex-col gap-10 px-5 py-14 sm:flex-row sm:items-start sm:justify-between lg:px-8">
         <div>
           <a href="#top" className="flex items-center gap-2.5">
-            <span className="grid h-8 w-8 place-items-center rounded-lg border border-line bg-panel text-beam">
-              <MagnifyingGlass size={15} weight="bold" />
-            </span>
+            <img
+              src={dockieLogo}
+              alt="Dockie"
+              className="h-8 w-8"
+              width={32}
+              height={32}
+            />
             <span className="text-[15px] font-semibold tracking-tight">
               Dockie
             </span>

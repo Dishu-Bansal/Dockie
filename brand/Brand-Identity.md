@@ -4,7 +4,8 @@ Version 1.0 · Brand kit source of truth for the Dockie desktop app (FileFinder)
 its logo, its UI, and its landing page.
 
 > The previous landing-page colors and the old `robot.ico` are placeholders.
-> This document and the `logo/` and `board/` assets in this folder replace them.
+> The app now ships with `logo.ico` (the Beam-D mark). This document and the
+> `logo/` and `board/` assets in this folder are the source of truth.
 
 ---
 
