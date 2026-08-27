@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dockie: Brand Identity System</title>
+<style>
+  :root {
+    --ink: #0c0d0f; --panel: #15171b; --panel2: #1a1d22;
+    --smoke: #9aa0a6; --faint: #6b7076; --paper: #f1eee7;
+    --beam: #e3a83e; --beam-strong: #f0bc5c; --ember: #b45518;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--ink); color: var(--paper);
+    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    -webkit-font-smoothing: antialiased; line-height: 1.6;
+  }
+  .mono { font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 0 28px; }
+  header { border-bottom: 1px solid #ffffff14; padding: 72px 0 56px; }
+  .kicker { font-size: 13px; color: var(--faint); letter-spacing: 0.12em; text-transform: uppercase; }
+  h1 { font-size: clamp(40px, 6vw, 72px); font-weight: 600; letter-spacing: -0.02em; line-height: 1.02; margin: 18px 0 14px; }
+  h1 em { color: var(--beam); font-style: normal; }
+  .tag { font-size: 20px; color: var(--smoke); max-width: 52ch; }
+  section { padding: 72px 0; border-bottom: 1px solid #ffffff14; }
+  h2 { font-size: 26px; font-weight: 600; letter-spacing: -0.015em; margin-bottom: 8px; }
+  .sub { color: var(--faint); font-size: 14px; margin-bottom: 36px; max-width: 70ch; }
+  .grid { display: grid; gap: 20px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid #ffffff14; border-radius: 16px;
+    padding: 28px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .card .cap { font-size: 13px; color: var(--faint); }
+  .card img { max-width: 100%; height: auto; display: block; }
+  .asset { background: var(--ink); border: 1px solid #ffffff12; border-radius: 12px; padding: 28px; display: grid; place-items: center; }
+  .asset.light { background: #f6f4ef; }
+  .asset img { max-height: 180px; }
+  .board { width: 100%; height: auto; border-radius: 16px; border: 1px solid #ffffff14; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+  .swatch { border-radius: 12px; padding: 18px; border: 1px solid #ffffff14; }
+  .swatch .dot { height: 64px; border-radius: 10px; margin-bottom: 12px; border: 1px solid #ffffff1f; }
+  .swatch .n { font-size: 13px; color: var(--paper); }
+  .swatch .u { font-size: 12px; color: var(--faint); }
+  .spec { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+  .spec .line { border-bottom: 1px solid #ffffff12; padding: 14px 0; display: flex; justify-content: space-between; gap: 20px; align-items: baseline; }
+  .spec .line span:first-child { color: var(--paper); }
+  .spec .line span:last-child { color: var(--faint); font-size: 13px; }
+  .kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 10px; border-radius: 7px; border: 1px solid #ffffff26; background: linear-gradient(180deg, #ffffff14, #ffffff06); font-family: 'Cascadia Mono', Consolas, monospace; font-size: 12px; color: var(--paper); }
+  .cta { display: inline-flex; align-items: center; gap: 8px; background: var(--beam); color: #201603; font-weight: 600; font-size: 14px; border-radius: 999px; padding: 12px 22px; text-decoration: none; }
+  footer { padding: 48px 0 64px; color: var(--faint); font-size: 13px; }
+  .dont { color: #c9a0a3; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <p class="kicker">Brand Identity System · v1.0</p>
+    <h1>Every document, <em>one beam away.</em></h1>
+    <p class="tag">Dockie is a beam of light over your documents: a local, keyboard-first search
+    overlay for Windows. The identity system is built around one image, light passing through the
+    letter D, finding the document, escaping as a ray.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Logo system</h2>
+    <p class="sub">The Beam-D mark: a geometric D whose counter holds a 45° beam that pierces the bowl
+    and escapes as a ray. The letterform is never broken. Four variants, one rule each.</p>
+    <div class="grid g3">
+      <div class="card"><div class="asset"><img src="logo/dockie-mark.svg" alt="Primary mark" /></div><p class="cap">primary · dark</p></div>
+      <div class="card"><div class="asset light"><img src="logo/dockie-mark-reversed.svg" alt="Reversed mark" /></div><p class="cap">reversed · light</p></div>
+      <div class="card"><div class="asset"><img src="logo/dockie-mark-mono.svg" alt="Monochrome mark" /></div><p class="cap">monochrome · beam as cut</p></div>
+      <div class="card"><div class="asset"><img src="logo/dockie-lockup.svg" alt="Lockup" /></div><p class="cap">lockup · primary</p></div>
+      <div class="card"><div class="asset"><img src="logo/dockie-wordmark.svg" alt="Wordmark" /></div><p class="cap">wordmark · Geist 700 · -2%</p></div>
+      <div class="card"><div class="asset"><img src="logo/dockie-construction.svg" alt="Construction" /></div><p class="cap">construction · 64-unit grid · 45°</p></div>
+      <div class="card"><div class="asset"><img src="logo/dockie-appicon.svg" alt="App icon" /></div><p class="cap">app icon · 256</p></div>
+      <div class="card"><div class="asset"><img src="logo/dockie-tray-dark-bg.svg" alt="Tray icon" /></div><p class="cap">tray · 16 · dark taskbar</p></div>
+      <div class="card"><div class="asset"><img src="logo/dockie-tray-light-bg.svg" alt="Tray icon" /></div><p class="cap">tray · 16 · light taskbar</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Brand board · sheet 01</h2>
+    <p class="sub">3 × 3 identity system: logo, construction, UI application, essence, color, type,
+    icons, image direction, system details.</p>
+    <img class="board" src="board/dockie-brand-board.svg" alt="Dockie brand identity board" />
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Wordmark system · sheet 02</h2>
+    <p class="sub">Primary lockup, the beam tick that replaces the dot of the i, reversed and
+    monochrome variants.</p>
+    <img class="board" src="board/dockie-wordmark-system.svg" alt="Dockie wordmark system board" />
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Color</h2>
+    <p class="sub">One accent family. Beam, beam-strong and ember are the same hue at different stops;
+    alert is functional only. Light mode: paper background, ink text, beam accent.</p>
+    <div class="swatches">
+      <div class="swatch"><div class="dot" style="background:#0c0d0f"></div><div class="n">Ink</div><div class="u">#0C0D0F · surfaces</div></div>
+      <div class="swatch"><div class="dot" style="background:#15171b"></div><div class="n">Panel</div><div class="u">#15171B · cards</div></div>
+      <div class="swatch"><div class="dot" style="background:#9aa0a6"></div><div class="n">Smoke</div><div class="u">#9AA0A6 · text 2</div></div>
+      <div class="swatch"><div class="dot" style="background:#f1eee7"></div><div class="n">Paper</div><div class="u">#F1EEE7 · text 1</div></div>
+      <div class="swatch"><div class="dot" style="background:#e3a83e"></div><div class="n">Beam</div><div class="u">#E3A83E · accent</div></div>
+      <div class="swatch"><div class="dot" style="background:#b45518"></div><div class="n">Ember</div><div class="u">#B45518 · deep accent</div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Typography & voice</h2>
+    <p class="sub">Geist for everything, Geist Mono for keys, paths and labels. Precise, calm, zero
+    hype. The vocabulary is the keyboard: <span class="kbd">Ctrl</span> <span class="kbd">↑</span>
+    <span class="kbd">↓</span> <span class="kbd">Enter</span> <span class="kbd">Esc</span></p>
+    <div class="spec">
+      <div>
+        <div class="line"><span style="font-size:34px;font-weight:600;letter-spacing:-0.02em">Geist</span><span>600 · -2% · display</span></div>
+        <div class="line"><span style="font-size:20px;font-weight:500">Geist Medium</span><span>500 · titles</span></div>
+        <div class="line"><span style="font-size:16px">Geist Regular</span><span>400 · body 16/1.6</span></div>
+      </div>
+      <div>
+        <div class="line mono"><span style="font-size:18px">Geist Mono</span><span>400 · keys & paths</span></div>
+        <div class="line mono"><span style="font-size:13px;color:#e3a83e">C:\Users\mara\Invoices</span><span>13 · metadata</span></div>
+        <div class="line"><span style="color:#9aa0a6">"Press Ctrl three times." Not "summon the overlay with a simple gesture."</span><span>voice</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Rules in brief</h2>
+    <div class="grid g2">
+      <div class="card">
+        <p class="cap">Do</p>
+        <p style="font-size:14px;color:#9aa0a6">Keep the D intact. Let the beam do the talking. Smoke text on ink. Earn the amber. One message per surface.</p>
+      </div>
+      <div class="card">
+        <p class="cap">Don't</p>
+        <p style="font-size:14px;color:#c9a0a3">Outline the mark. Gradient the letterform. Glow the beam. Add a second accent. Put the beam on the stem. Use the full mark below 32 px.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>Full specification: <span class="mono">brand/Brand-Identity.md</span> · Logo assets: <span class="mono">brand/logo/</span> · Boards: <span class="mono">brand/board/</span></p>
+  </div>
+</footer>
+
+</body>
+</html>

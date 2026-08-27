@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 420" width="1280" height="840" role="img" aria-label="Dockie logo construction diagram">
+  <!-- Dockie Beam-D: construction geometry. Mark drawn at 3x on a 64-unit
+       grid. All construction lines use non-scaling strokes so hairlines
+       stay crisp at any render size. -->
+  <title>Dockie logo construction</title>
+  <style>
+    .grid { stroke: #F1EEE7; stroke-opacity: 0.07; stroke-width: 1; }
+    .dim  { stroke: #6B7076; stroke-width: 1; stroke-dasharray: 4 4; fill: none; }
+    .tick { stroke: #9AA0A6; stroke-width: 1.4; }
+    .lbl  { font-family: 'Geist Mono', 'Cascadia Mono', Consolas, monospace; font-size: 12px; fill: #9AA0A6; }
+    .lbl-dim { font-family: 'Geist Mono', 'Cascadia Mono', Consolas, monospace; font-size: 11px; fill: #6B7076; }
+    .title { font-family: 'Geist', 'Segoe UI', Arial, sans-serif; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; fill: #F1EEE7; }
+    .sub   { font-family: 'Geist Mono', 'Cascadia Mono', Consolas, monospace; font-size: 12px; fill: #6B7076; }
+  </style>
+  <rect width="640" height="420" fill="#0C0D0F"/>
+  <text x="40" y="46" class="title">Logo construction</text>
+  <text x="40" y="68" class="sub">64-unit grid · stem + semicircular bowl · 45° beam</text>
+
+  <g transform="translate(170,72) scale(3)">
+    <!-- 64-unit grid -->
+    <g class="grid">
+      <path d="M8 8 H56 M8 16 H56 M8 24 H56 M8 32 H56 M8 40 H56 M8 48 H56 M8 56 H56"/>
+      <path d="M8 8 V56 M16 8 V56 M24 8 V56 M32 8 V56 M40 8 V56 M48 8 V56 M56 8 V56"/>
+    </g>
+
+    <!-- the mark -->
+    <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#F1EEE7"/>
+    <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+    <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+
+    <!-- construction overlays -->
+    <g class="dim">
+      <!-- circle construction: center (19,32) r23 -->
+      <circle cx="19" cy="32" r="23"/>
+      <!-- beam extended centerline -->
+      <path d="M14 10 L55 51"/>
+    </g>
+    <!-- center crosshair -->
+    <g class="tick">
+      <path d="M17 32 H21 M19 30 V34"/>
+    </g>
+    <circle cx="19" cy="32" r="2" fill="#E3A83E"/>
+    <text x="26" y="27" class="lbl-dim">C (19,32)</text>
+
+    <!-- radius dimension -->
+    <path d="M19 32 L42 32" class="dim"/>
+    <text x="28" y="25" class="lbl">R 23</text>
+
+    <!-- stem dimension -->
+    <path d="M10 62 H19" class="dim"/>
+    <path d="M10 60 V64 M19 60 V64" class="tick"/>
+    <text x="11" y="76" class="lbl">9</text>
+
+    <!-- 45 deg angle arc at beam entry -->
+    <path d="M28.1 22.3 A10 10 0 0 0 26.5 12.3" fill="none" class="tick"/>
+    <text x="33" y="14" class="lbl">45°</text>
+
+    <!-- exit crossing -->
+    <circle cx="45" cy="41" r="5" class="dim"/>
+    <text x="52" y="56" class="lbl">the ray</text>
+  </g>
+
+  <text x="40" y="392" class="lbl-dim">mark · 64-unit · stem 9 · bowl R23 · beam 45° w7 · exit 5u</text>
+</svg>

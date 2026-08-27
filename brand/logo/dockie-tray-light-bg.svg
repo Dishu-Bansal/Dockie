@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Dockie tray icon">
+  <!-- Dockie tray icon, reduced mono D (beam dropped at <=16px).
+       Light-taskbar variant: ink letterform. -->
+  <title>Dockie</title>
+  <g fill="none" stroke="#0C0D0F">
+    <rect x="3" y="2.5" width="3" height="11" rx="1.5" fill="#0C0D0F" stroke="none"/>
+    <path d="M6 2.5 A5.5 5.5 0 0 1 6 13.5" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>
