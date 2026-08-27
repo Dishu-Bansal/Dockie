@@ -1,0 +1,290 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 1500" width="2400" height="1500" role="img" aria-label="Dockie brand identity system board">
+  <title>Dockie: Brand Identity System, sheet 01</title>
+  <desc>3x3 brand-kit board: logo, construction, UI application, essence, color, type, icons, image direction, system details.</desc>
+
+  <style>
+    .panel   { fill: #141619; stroke: #FFFFFF14; }
+    .lbl     { font-family: 'Geist Mono','Cascadia Mono',Consolas,monospace; font-size: 15px; fill: #6B7076; }
+    .pnum    { font-family: 'Geist Mono','Cascadia Mono',Consolas,monospace; font-size: 15px; fill: #4A4F55; }
+    .foot    { font-family: 'Geist Mono','Cascadia Mono',Consolas,monospace; font-size: 14px; fill: #4A4F55; }
+    .t       { font-family: 'Geist','Segoe UI','Helvetica Neue',Arial,sans-serif; }
+    .tm      { font-family: 'Geist Mono','Cascadia Mono',Consolas,monospace; }
+  </style>
+
+  <defs>
+    <filter id="grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+
+    <radialGradient id="glow-app" cx="0.5" cy="0.4" r="0.62">
+      <stop offset="0" stop-color="#E3A83E" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#E3A83E" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#E3A83E" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="scene-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0C0D0F"/>
+      <stop offset="0.62" stop-color="#14100A"/>
+      <stop offset="1" stop-color="#1C1307"/>
+    </linearGradient>
+
+    <linearGradient id="scene-beam" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E3A83E" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#E3A83E" stop-opacity="0"/>
+    </linearGradient>
+
+    <pattern id="halftone" width="12" height="12" patternUnits="userSpaceOnUse">
+      <circle cx="3" cy="3" r="1.7" fill="#E3A83E" fill-opacity="0.14"/>
+    </pattern>
+
+    <clipPath id="clip-p8">
+      <rect x="840" y="996" width="720" height="420" rx="20"/>
+    </clipPath>
+  </defs>
+
+  <!-- canvas -->
+  <rect width="2400" height="1500" fill="#0C0D0F"/>
+  <g stroke="#FFFFFF" stroke-opacity="0.025">
+    <path d="M80 0 V1500 M160 0 V1500 M240 0 V1500 M320 0 V1500 M400 0 V1500 M480 0 V1500 M560 0 V1500 M640 0 V1500 M720 0 V1500 M800 0 V1500 M880 0 V1500 M960 0 V1500 M1040 0 V1500 M1120 0 V1500 M1200 0 V1500 M1280 0 V1500 M1360 0 V1500 M1440 0 V1500 M1520 0 V1500 M1600 0 V1500 M1680 0 V1500 M1760 0 V1500 M1840 0 V1500 M1920 0 V1500 M2000 0 V1500 M2080 0 V1500 M2160 0 V1500 M2240 0 V1500 M2320 0 V1500"/>
+    <path d="M0 80 H2400 M0 160 H2400 M0 240 H2400 M0 320 H2400 M0 400 H2400 M0 480 H2400 M0 560 H2400 M0 640 H2400 M0 720 H2400 M0 800 H2400 M0 880 H2400 M0 960 H2400 M0 1040 H2400 M0 1120 H2400 M0 1200 H2400 M0 1280 H2400 M0 1360 H2400 M0 1440 H2400"/>
+  </g>
+  <rect width="2400" height="1500" filter="url(#grain)" fill="#FFFFFF" opacity="0.035"/>
+
+  <!-- ============ PANEL 1 · logo cover ============ -->
+  <g>
+    <rect x="84" y="84" width="720" height="420" rx="20" class="panel"/>
+    <g transform="translate(444,280) scale(4.5) translate(-28,-32)">
+      <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#F1EEE7"/>
+      <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+      <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+    </g>
+    <text x="444" y="428" text-anchor="middle" class="t" font-size="54" font-weight="700" letter-spacing="-1.1" fill="#F1EEE7">Dockie</text>
+    <text x="120" y="476" class="lbl">01 / logo · primary</text>
+    <text x="768" y="476" text-anchor="end" class="pnum">01</text>
+  </g>
+
+  <!-- ============ PANEL 2 · construction ============ -->
+  <g>
+    <rect x="840" y="84" width="720" height="420" rx="20" class="panel"/>
+    <g transform="translate(1200,294) scale(2.2) translate(-28,-32)">
+      <g stroke="#F1EEE7" stroke-opacity="0.06">
+        <path d="M8 8 H56 M8 16 H56 M8 24 H56 M8 32 H56 M8 40 H56 M8 48 H56 M8 56 H56"/>
+        <path d="M8 8 V56 M16 8 V56 M24 8 V56 M32 8 V56 M40 8 V56 M48 8 V56 M56 8 V56"/>
+      </g>
+      <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#F1EEE7"/>
+      <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+      <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+      <!-- overlays -->
+      <g stroke="#6B7076" stroke-width="1" stroke-dasharray="4 4" fill="none">
+        <circle cx="19" cy="32" r="23"/>
+        <path d="M14 10 L55 51"/>
+        <path d="M19 32 L42 32"/>
+        <circle cx="45" cy="41" r="5"/>
+      </g>
+      <g stroke="#9AA0A6" stroke-width="1.4" fill="none">
+        <path d="M17 32 H21 M19 30 V34"/>
+        <path d="M10 62 H19"/>
+        <path d="M10 60 V64 M19 60 V64"/>
+        <path d="M28.1 22.3 A10 10 0 0 0 26.5 12.3"/>
+      </g>
+      <circle cx="19" cy="32" r="2" fill="#E3A83E"/>
+      <text x="26" y="27" class="tm" font-size="9" fill="#6B7076">C (19,32)</text>
+      <text x="28" y="25" class="tm" font-size="10" fill="#9AA0A6">R 23</text>
+      <text x="11" y="76" class="tm" font-size="10" fill="#9AA0A6">9</text>
+      <text x="33" y="14" class="tm" font-size="10" fill="#9AA0A6">45°</text>
+      <text x="50" y="56" class="tm" font-size="9" fill="#6B7076">the ray</text>
+    </g>
+    <text x="876" y="476" class="lbl">02 / construction · 45° beam</text>
+    <text x="1524" y="476" text-anchor="end" class="pnum">02</text>
+  </g>
+
+  <!-- ============ PANEL 3 · digital application ============ -->
+  <g>
+    <rect x="1596" y="84" width="720" height="420" rx="20" class="panel"/>
+
+    <!-- overlay window -->
+    <rect x="1646" y="144" width="620" height="290" rx="16" fill="#0C0D0F" stroke="#FFFFFF1F"/>
+
+    <!-- search row -->
+    <circle cx="1676" cy="184" r="8" fill="none" stroke="#E3A83E" stroke-width="2"/>
+    <path d="M1682 190 L1692 200" stroke="#E3A83E" stroke-width="2" stroke-linecap="round"/>
+    <text x="1698" y="189" class="tm" font-size="14" fill="#6B7076">What file are you looking for?</text>
+    <rect x="1960" y="177" width="2" height="15" fill="#E3A83E"/>
+    <path d="M1670 240 H2242" stroke="#FFFFFF12"/>
+
+    <!-- result 1 (active) -->
+    <rect x="1670" y="248" width="572" height="70" rx="10" fill="#E3A83E14"/>
+    <rect x="1692" y="270" width="14" height="18" rx="2" fill="none" stroke="#E3A83E" stroke-width="2"/>
+    <text x="1720" y="284" class="t" font-size="14" font-weight="500" fill="#F1EEE7">2025-03-invoice.pdf</text>
+    <text x="1720" y="302" class="tm" font-size="10.5" fill="#6B7076">C:\Users\mara\Invoices</text>
+    <text x="1720" y="320" class="tm" font-size="10.5" fill="#9AA0A6">The March <tspan fill="#E3A83E">invoice</tspan> for the audit file, net 30 days.</text>
+
+    <!-- result 2 -->
+    <rect x="1670" y="326" width="572" height="70" rx="10" fill="#FFFFFF06"/>
+    <rect x="1692" y="348" width="14" height="18" rx="2" fill="none" stroke="#9AA0A6" stroke-width="2"/>
+    <text x="1720" y="362" class="t" font-size="14" font-weight="500" fill="#9AA0A6">vendor-agreement.pdf</text>
+    <text x="1720" y="380" class="tm" font-size="10.5" fill="#6B7076">C:\Users\mara\Contracts</text>
+    <text x="1720" y="398" class="tm" font-size="10.5" fill="#9AA0A6">The second <tspan fill="#E3A83E">invoice</tspan> is due on receipt, Q2 retainer.</text>
+
+    <!-- key hints -->
+    <g>
+      <rect x="1676" y="408" width="44" height="24" rx="5" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1698" y="424" text-anchor="middle" class="tm" font-size="11" fill="#F1EEE7">↑↓</text>
+      <rect x="1728" y="408" width="58" height="24" rx="5" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1757" y="424" text-anchor="middle" class="tm" font-size="11" fill="#F1EEE7">Enter</text>
+      <rect x="1794" y="408" width="46" height="24" rx="5" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1817" y="424" text-anchor="middle" class="tm" font-size="11" fill="#F1EEE7">Esc</text>
+      <text x="2242" y="424" text-anchor="end" class="tm" font-size="11" fill="#6B7076">3 matches</text>
+    </g>
+
+    <text x="1632" y="476" class="lbl">03 / ui · search overlay</text>
+    <text x="2280" y="476" text-anchor="end" class="pnum">03</text>
+  </g>
+
+  <!-- ============ PANEL 4 · essence ============ -->
+  <g>
+    <rect x="84" y="540" width="720" height="420" rx="20" class="panel"/>
+    <text x="444" y="706" text-anchor="middle" class="t" font-size="56" font-weight="600" letter-spacing="-1.1" fill="#F1EEE7">Every document,</text>
+    <text x="444" y="776" text-anchor="middle" class="t" font-size="56" font-weight="600" letter-spacing="-1.1" fill="#E3A83E">one beam away.</text>
+    <text x="120" y="932" class="lbl">04 / essence · tagline</text>
+    <text x="768" y="932" text-anchor="end" class="pnum">04</text>
+  </g>
+
+  <!-- ============ PANEL 5 · color ============ -->
+  <g>
+    <rect x="840" y="540" width="720" height="420" rx="20" class="panel"/>
+    <!-- row 1 -->
+    <rect x="876" y="604" width="196" height="84" rx="12" fill="#0C0D0F" stroke="#FFFFFF26"/>
+    <text x="974" y="722" text-anchor="middle" class="tm" font-size="13" fill="#9AA0A6">0C0D0F · ink</text>
+    <rect x="1096" y="604" width="196" height="84" rx="12" fill="#F1EEE7"/>
+    <text x="1194" y="722" text-anchor="middle" class="tm" font-size="13" fill="#9AA0A6">F1EEE7 · paper</text>
+    <rect x="1316" y="604" width="196" height="84" rx="12" fill="#E3A83E"/>
+    <text x="1414" y="722" text-anchor="middle" class="tm" font-size="13" fill="#0C0D0F">E3A83E · beam</text>
+    <!-- row 2 -->
+    <rect x="876" y="736" width="196" height="84" rx="12" fill="#15171B" stroke="#FFFFFF26"/>
+    <text x="974" y="854" text-anchor="middle" class="tm" font-size="13" fill="#9AA0A6">15171B · panel</text>
+    <rect x="1096" y="736" width="196" height="84" rx="12" fill="#9AA0A6"/>
+    <text x="1194" y="854" text-anchor="middle" class="tm" font-size="13" fill="#0C0D0F">9AA0A6 · smoke</text>
+    <rect x="1316" y="736" width="196" height="84" rx="12" fill="#B45518"/>
+    <text x="1414" y="854" text-anchor="middle" class="tm" font-size="13" fill="#F1EEE7">B45518 · ember</text>
+    <text x="876" y="932" class="lbl">05 / color · one accent family</text>
+    <text x="1524" y="932" text-anchor="end" class="pnum">05</text>
+  </g>
+
+  <!-- ============ PANEL 6 · typography ============ -->
+  <g>
+    <rect x="1596" y="540" width="720" height="420" rx="20" class="panel"/>
+    <text x="1636" y="668" class="t" font-size="96" font-weight="700" letter-spacing="-1.9" fill="#F1EEE7">Dockie</text>
+    <text x="2280" y="648" text-anchor="end" class="tm" font-size="13" fill="#6B7076">Geist 700 · -2%</text>
+    <text x="1636" y="742" class="t" font-size="34" fill="#9AA0A6">Aa Bb Cc Dd Ee 0123456789</text>
+    <text x="2280" y="734" text-anchor="end" class="tm" font-size="13" fill="#6B7076">Geist 400</text>
+    <text x="1636" y="806" class="tm" font-size="22" fill="#9AA0A6">C:\Users\mara\Invoices\2025-03-invoice.pdf</text>
+    <text x="2280" y="800" text-anchor="end" class="tm" font-size="13" fill="#6B7076">Geist Mono 400</text>
+    <text x="1632" y="932" class="lbl">06 / type · geist + geist mono</text>
+    <text x="2280" y="932" text-anchor="end" class="pnum">06</text>
+  </g>
+
+  <!-- ============ PANEL 7 · icons / application ============ -->
+  <g>
+    <rect x="84" y="996" width="720" height="420" rx="20" class="panel"/>
+    <!-- app icon -->
+    <g transform="translate(144,1046)">
+      <rect width="150" height="150" rx="33" fill="#0C0D0F" stroke="#FFFFFF14"/>
+      <rect width="150" height="150" rx="33" fill="url(#glow-app)"/>
+      <g transform="translate(75,75) scale(1.3) translate(-28,-32)">
+        <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#F1EEE7"/>
+        <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+        <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+      </g>
+    </g>
+    <text x="219" y="1226" text-anchor="middle" class="tm" font-size="12" fill="#6B7076">app · 256</text>
+    <!-- tray -->
+    <g transform="translate(334,1066) scale(3)">
+      <rect x="3" y="2.5" width="3" height="11" rx="1.5" fill="#F1EEE7"/>
+      <path d="M6 2.5 A5.5 5.5 0 0 1 6 13.5" fill="none" stroke="#F1EEE7" stroke-width="3" stroke-linecap="round"/>
+    </g>
+    <text x="358" y="1226" text-anchor="middle" class="tm" font-size="12" fill="#6B7076">tray · 16</text>
+    <!-- badge -->
+    <circle cx="470" cy="1096" r="55" fill="#15171B" stroke="#FFFFFF14"/>
+    <g transform="translate(470,1096) scale(1.55) translate(-28,-32)">
+      <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#F1EEE7"/>
+      <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+      <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+    </g>
+    <text x="470" y="1226" text-anchor="middle" class="tm" font-size="12" fill="#6B7076">badge · seal</text>
+    <text x="120" y="1388" class="lbl">07 / icons · application</text>
+    <text x="768" y="1388" text-anchor="end" class="pnum">07</text>
+  </g>
+
+  <!-- ============ PANEL 8 · image direction ============ -->
+  <g clip-path="url(#clip-p8)">
+    <rect x="840" y="996" width="720" height="420" fill="url(#scene-bg)"/>
+    <rect x="840" y="1150" width="720" height="266" fill="url(#halftone)"/>
+    <!-- document silhouettes -->
+    <rect x="980" y="1152" width="430" height="190" rx="14" fill="#F1EEE7" opacity="0.05"/>
+    <rect x="1020" y="1118" width="390" height="158" rx="14" fill="#F1EEE7" opacity="0.08"/>
+    <rect x="1050" y="1092" width="330" height="126" rx="14" fill="#F1EEE7" opacity="0.11"/>
+    <!-- the beam -->
+    <polygon points="840,996 1240,996 1120,1416 840,1416" fill="url(#scene-beam)"/>
+    <path d="M900 996 L1180 996" stroke="#E3A83E" stroke-width="2" stroke-opacity="0.5"/>
+    <text x="880" y="1032" class="tm" font-size="12" fill="#6B7076">the beam · dusk</text>
+  </g>
+  <rect x="840" y="996" width="720" height="420" rx="20" fill="none" stroke="#FFFFFF14"/>
+  <text x="876" y="1388" class="lbl">08 / image · the beam</text>
+  <text x="1524" y="1388" text-anchor="end" class="pnum">08</text>
+
+  <!-- ============ PANEL 9 · system details ============ -->
+  <g>
+    <rect x="1596" y="996" width="720" height="420" rx="20" class="panel"/>
+    <!-- kbd chips -->
+    <g>
+      <rect x="1636" y="1032" width="58" height="32" rx="8" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1665" y="1053" text-anchor="middle" class="tm" font-size="13" fill="#F1EEE7">Ctrl</text>
+      <text x="1702" y="1053" text-anchor="middle" class="tm" font-size="13" fill="#6B7076">+</text>
+      <rect x="1716" y="1032" width="58" height="32" rx="8" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1745" y="1053" text-anchor="middle" class="tm" font-size="13" fill="#F1EEE7">Ctrl</text>
+      <text x="1782" y="1053" text-anchor="middle" class="tm" font-size="13" fill="#6B7076">+</text>
+      <rect x="1796" y="1032" width="58" height="32" rx="8" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1825" y="1053" text-anchor="middle" class="tm" font-size="13" fill="#F1EEE7">Ctrl</text>
+      <rect x="1878" y="1032" width="70" height="32" rx="8" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1913" y="1053" text-anchor="middle" class="tm" font-size="13" fill="#F1EEE7">Enter</text>
+      <rect x="1956" y="1032" width="52" height="32" rx="8" fill="#FFFFFF0D" stroke="#FFFFFF26"/>
+      <text x="1982" y="1053" text-anchor="middle" class="tm" font-size="13" fill="#F1EEE7">Esc</text>
+    </g>
+    <!-- status chips -->
+    <g>
+      <rect x="1636" y="1094" width="104" height="30" rx="15" fill="#E3A83E18" stroke="#E3A83E45"/>
+      <circle cx="1658" cy="1109" r="7" fill="#E3A83E"/>
+      <path d="M1654.5 1109 L1657 1111.5 L1661.5 1106.5" fill="none" stroke="#0C0D0F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="1676" y="1114" class="tm" font-size="12" fill="#F0BC5C">indexed</text>
+      <rect x="1756" y="1094" width="130" height="30" rx="15" fill="#FFFFFF0A" stroke="#FFFFFF1F"/>
+      <text x="1792" y="1114" class="tm" font-size="12" fill="#9AA0A6">local · no cloud</text>
+    </g>
+    <!-- empty state -->
+    <text x="1660" y="1172" class="tm" font-size="13" fill="#6B7076">What file are you looking for?</text>
+    <rect x="1900" y="1160" width="2" height="15" fill="#E3A83E"/>
+    <!-- icon row -->
+    <g fill="none" stroke="#9AA0A6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="1674" cy="1240" r="9" stroke="#E3A83E"/>
+      <path d="M1681 1247 L1690 1256" stroke="#E3A83E"/>
+      <rect x="1708" y="1228" width="12" height="24" rx="2.5"/>
+      <path d="M1712 1233 H1720 V1240 H1712 Z" fill="#9AA0A6" fill-opacity="0.35"/>
+      <path d="M1744 1228 H1758 L1766 1236 V1252 H1744 Z"/>
+      <circle cx="1796" cy="1240" r="10"/>
+      <path d="M1791.5 1240 L1795 1243.5 L1800.5 1236.5"/>
+      <circle cx="1824" cy="1231" r="5"/>
+      <path d="M1824 1236 V1252"/>
+      <path d="M1820 1246 L1828 1246"/>
+      <rect x="1852" y="1228" width="24" height="24" rx="4"/>
+      <path d="M1858 1234 H1870 M1858 1240 H1866 M1858 1246 H1870"/>
+    </g>
+    <text x="1632" y="1388" class="lbl">09 / system · details</text>
+    <text x="2280" y="1388" text-anchor="end" class="pnum">09</text>
+  </g>
+
+  <!-- footer -->
+  <path d="M84 1452 H2316" stroke="#FFFFFF14"/>
+  <text x="84" y="1476" class="foot">DOCKIE / BRAND IDENTITY SYSTEM</text>
+  <text x="2316" y="1476" text-anchor="end" class="foot">SHEET 01 / 02</text>
+</svg>

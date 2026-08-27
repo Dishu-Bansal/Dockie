@@ -8,3 +8,5 @@ Output/
 # UI development preview artifacts (not part of the app)
 _ui_preview.py
 _ui_shot_*.png
+.peek_*.png
+.test_ctrl_index_ui.py

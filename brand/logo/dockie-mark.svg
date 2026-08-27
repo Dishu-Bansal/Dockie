@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256" role="img" aria-label="Dockie mark">
+  <!-- Dockie "Beam-D" mark, primary (dark) variant.
+       D: stem x10-19 y9-55 + right semicircular bowl r23 centered (19,32).
+       Beam: 45 deg stroke (22,18)-(47,43), width 7, escapes the bowl at
+       the lower-right as a short ray. Letterform never broken. -->
+  <title>Dockie</title>
+  <g>
+    <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#F1EEE7"/>
+    <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+    <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+  </g>
+</svg>

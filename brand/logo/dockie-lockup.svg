@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 64" width="880" height="256" role="img" aria-label="Dockie logo lockup">
+  <!-- Dockie lockup: Beam-D mark + wordmark. Wordmark is typeset Geist Bold,
+       tracking -2%. Brand detail: at display sizes the dot of the "i" is a
+       beam tick (see Brand-Identity.md section 2). -->
+  <title>Dockie</title>
+  <g transform="translate(4,9)">
+    <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#F1EEE7"/>
+    <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+    <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <text x="62" y="46" font-family="Geist, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-weight="700" font-size="40" letter-spacing="-0.8" fill="#F1EEE7">Dockie</text>
+</svg>

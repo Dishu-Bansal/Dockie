@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256" role="img" aria-label="Dockie mark, reversed">
+  <!-- Dockie "Beam-D" mark, reversed (light background) variant. -->
+  <title>Dockie</title>
+  <g>
+    <rect x="10" y="9" width="9" height="46" rx="4.5" fill="#0C0D0F"/>
+    <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#0C0D0F" stroke-width="9" stroke-linecap="round"/>
+    <path d="M22 18 L47 43" stroke="#E3A83E" stroke-width="7" stroke-linecap="round"/>
+  </g>
+</svg>

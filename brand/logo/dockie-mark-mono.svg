@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256" role="img" aria-label="Dockie mark, monochrome">
+  <!-- Dockie "Beam-D" mark, monochrome variant: the beam renders as
+       negative space (a slit through the counter and a notch in the bowl),
+       so the mark works in a single color. Recolor by changing the D fill. -->
+  <title>Dockie</title>
+  <defs>
+    <mask id="beam-notch">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M22 18 L47 43" stroke="#000" stroke-width="7" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <g mask="url(#beam-notch)" fill="#F1EEE7">
+    <rect x="10" y="9" width="9" height="46" rx="4.5"/>
+    <path d="M19 9 A23 23 0 0 1 19 55" fill="none" stroke="#F1EEE7" stroke-width="9" stroke-linecap="round"/>
+  </g>
+</svg>
