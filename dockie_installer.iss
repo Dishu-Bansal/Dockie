@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "Dockie"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Bansia Labs"
 #define MyAppExeName "Dockie.exe"
 
@@ -33,7 +33,7 @@ CloseApplications=yes
 RestartApplications=no
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
-OutputBaseFilename=dockie_setup_v101
+OutputBaseFilename=dockie_setup_v100
 SetupIconFile=D:\Projects\Automation\FileFinder\logo.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
