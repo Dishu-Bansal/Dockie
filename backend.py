@@ -366,19 +366,31 @@ def start_watcher():
 # side-effect such as the window system menu).
 _CTRL_VKS = {0x11, 0xA2, 0xA3}  # VK_CONTROL / VK_LCONTROL / VK_RCONTROL
 _last_ctrl_times: list[float] = []
+# Ctrl VKs currently held down. Windows key auto-repeat emits a WM_KEYDOWN
+# (and therefore a pynput on_press) per repeat, so without this a single
+# long Ctrl press would count as several presses and trigger the overlay.
+_ctrl_held: set[int] = set()
 _hotkey_listener = None
 
 
-def _on_press(key):
-    global _last_ctrl_times
+def _key_vk(key):
     # pynput exposes the VK on KeyCode directly but on Key enum members only
     # via .value.vk (e.g. Key.ctrl_l is <162> with key.vk == None).
     vk = getattr(key, 'vk', None)
     if vk is None:
         vk = getattr(getattr(key, 'value', None), 'vk', None)
+    return vk
+
+
+def _on_press(key):
+    global _last_ctrl_times, _ctrl_held
+    vk = _key_vk(key)
     if vk not in _CTRL_VKS:
         _last_ctrl_times.clear()  # any other key resets the triple-Ctrl sequence
         return
+    if vk in _ctrl_held:
+        return  # OS auto-repeat while held: not a fresh press
+    _ctrl_held.add(vk)
 
     now = time.time()
     _last_ctrl_times.append(now)
@@ -388,6 +400,12 @@ def _on_press(key):
         _last_ctrl_times.clear()
         log('Hotkey: triple-Ctrl pressed, launching search UI')
         launch_ui()
+
+
+def _on_release(key):
+    vk = _key_vk(key)
+    if vk in _CTRL_VKS:
+        _ctrl_held.discard(vk)
 
 # ── Search overlay (in-process) ──
 # The overlay is built directly in this process, on the Qt main thread.
@@ -674,6 +692,11 @@ class IndexingWindow(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(300)
+        # Startup peek: show once and auto-hide after 3 s. Reopened via the
+        # tray "Show" item, the window stays until the Hide button is clicked.
+        self._peek_timer = QTimer(self)
+        self._peek_timer.setSingleShot(True)
+        self._peek_timer.timeout.connect(self.hide)
         self._refresh()
 
     def _init_ui(self):
@@ -750,6 +773,16 @@ class IndexingWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def show_startup_peek(self):
+        """Show at startup and auto-hide after 3 s."""
+        self._peek_timer.start(3000)
+        self.show_and_raise()
+
+    def show_persistent(self):
+        """Tray reopen: stays visible until the Hide button is clicked."""
+        self._peek_timer.stop()
+        self.show_and_raise()
 
     def _refresh(self):
         phase = _state.phase
@@ -847,7 +880,8 @@ def main():
     # Hotkey: triple-Ctrl (left or right) via a pynput listener
     log('Starting hotkey listener (triple-Ctrl)...')
     global _hotkey_listener
-    _hotkey_listener = keyboard.Listener(on_press=_on_press)
+    _hotkey_listener = keyboard.Listener(
+        on_press=_on_press, on_release=_on_release)
     _hotkey_listener.daemon = True
     try:
         _hotkey_listener.start()
@@ -874,15 +908,18 @@ def main():
 
     log('========================================')
 
-    # Indexing window (hidden until the tray "Show" item is clicked).
+    # Indexing window: show once at startup and auto-hide after 3 s. The
+    # tray "Show" item reopens it persistently (until the Hide button is
+    # clicked).
     try:
         bridge = WindowBridge()
         window = IndexingWindow()
-        bridge.show_requested.connect(window.show_and_raise)
+        bridge.show_requested.connect(window.show_persistent)
         bridge.quit_requested.connect(app.quit)
         bridge.ui_requested.connect(_show_search_ui)
         _bridge = bridge
-        log('Indexing window ready (hidden)')
+        window.show_startup_peek()
+        log('Indexing window shown at startup (auto-hide in 3 s)')
     except Exception:
         log_exc('Indexing window failed to initialize')
         _bridge = None
@@ -893,8 +930,7 @@ def main():
         _run_tray()
         log('System tray active')
     elif window is not None:
-        log('System tray unavailable — showing window directly')
-        window.show_and_raise()
+        log('System tray unavailable — indexing window shown at startup only')
 
     try:
         app.exec()
