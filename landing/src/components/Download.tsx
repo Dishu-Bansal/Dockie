@@ -1,14 +1,10 @@
 import { DownloadSimple } from "@phosphor-icons/react";
 import { Reveal } from "./Reveal";
-import {
-  DOWNLOAD_URL,
-  GITHUB_URL,
-  RELEASES_URL,
-  SIZE_MB,
-  VERSION,
-} from "../site";
+import { GITHUB_URL, RELEASES_URL } from "../site";
+import { useLatestRelease } from "../lib/release";
 
 export function Download() {
+  const { url, version, sizeLabel } = useLatestRelease();
   return (
     <section className="relative overflow-hidden py-24 lg:py-32">
       <div
@@ -27,7 +23,7 @@ export function Download() {
           </p>
 
           <a
-            href={DOWNLOAD_URL}
+            href={url}
             target="_blank"
             rel="noreferrer"
             className="mt-8 inline-flex h-12 items-center gap-2 rounded-full bg-beam px-7 text-[15px] font-semibold text-beam-ink transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-beam-strong active:translate-y-0 active:scale-[0.98]"
@@ -37,8 +33,8 @@ export function Download() {
           </a>
 
           <div className="mt-7 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 font-mono text-[12px] text-faint">
-            <span>v{VERSION}</span>
-            <span>~{SIZE_MB}</span>
+            <span>v{version}</span>
+            <span>{sizeLabel}</span>
             <span>Windows 10+</span>
           </div>
 

@@ -1,5 +1,6 @@
 import { ArrowUpRight, DownloadSimple } from "@phosphor-icons/react";
-import { DOWNLOAD_URL, GITHUB_URL } from "../site";
+import { GITHUB_URL } from "../site";
+import { useLatestRelease } from "../lib/release";
 import dockieLogo from "../assets/dockie-logo.png";
 
 const LINKS = [
@@ -9,6 +10,7 @@ const LINKS = [
 ];
 
 export function Nav() {
+  const { url } = useLatestRelease();
   return (
     <header className="fixed inset-x-0 top-0 z-50 border-b border-line bg-ink/85 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 lg:px-8">
@@ -51,7 +53,7 @@ export function Nav() {
         </nav>
 
         <a
-          href={DOWNLOAD_URL}
+          href={url}
           target="_blank"
           rel="noreferrer"
           className="inline-flex h-9 items-center gap-1.5 rounded-full bg-beam px-4 text-[13px] font-semibold text-beam-ink transition-[transform,background-color] duration-200 hover:-translate-y-px hover:bg-beam-strong active:translate-y-0 active:scale-[0.98]"
