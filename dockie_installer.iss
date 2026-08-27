@@ -34,7 +34,7 @@ RestartApplications=no
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
 OutputBaseFilename=dockie_setup_v101
-SetupIconFile=D:\Projects\Automation\FileFinder\robot.ico
+SetupIconFile=D:\Projects\Automation\FileFinder\logo.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
 

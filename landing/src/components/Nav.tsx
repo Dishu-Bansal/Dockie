@@ -1,5 +1,6 @@
-import { ArrowUpRight, DownloadSimple, MagnifyingGlass } from "@phosphor-icons/react";
+import { ArrowUpRight, DownloadSimple } from "@phosphor-icons/react";
 import { DOWNLOAD_URL, GITHUB_URL } from "../site";
+import dockieLogo from "../assets/dockie-logo.png";
 
 const LINKS = [
   { label: "Features", href: "#features" },
@@ -12,9 +13,13 @@ export function Nav() {
     <header className="fixed inset-x-0 top-0 z-50 border-b border-line bg-ink/85 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 lg:px-8">
         <a href="#top" className="flex items-center gap-2.5">
-          <span className="grid h-8 w-8 place-items-center rounded-lg border border-line bg-panel text-beam">
-            <MagnifyingGlass size={15} weight="bold" />
-          </span>
+          <img
+            src={dockieLogo}
+            alt="Dockie"
+            className="h-8 w-8"
+            width={32}
+            height={32}
+          />
           <span className="text-[15px] font-semibold tracking-tight">
             Dockie
           </span>

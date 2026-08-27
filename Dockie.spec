@@ -5,7 +5,7 @@ a = Analysis(
     ['indexer.py'],
     pathex=[],
     binaries=[],
-    datas=[('robot.ico', '.')],
+    datas=[('logo.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['robot.ico'],
+    icon=['logo.ico'],
 )

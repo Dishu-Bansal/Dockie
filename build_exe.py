@@ -4,7 +4,7 @@ import os
 # Adjust these variables for your program
 PROGRAM_NAME = "Dockie"
 MAIN_SCRIPT = "indexer.py"  # Your program's entry point
-ICON_PATH = "robot.ico"   # Optional: Path to your program's icon
+ICON_PATH = "logo.ico"   # Optional: Path to your program's icon
 
 PyInstaller.__main__.run([
     MAIN_SCRIPT,
