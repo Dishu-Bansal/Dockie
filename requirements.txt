@@ -4,6 +4,13 @@ pynput>=1.7
 pystray>=0.19
 Pillow>=10.0
 PyQt6>=6.4
+# Document text extraction: Word (.docx, legacy .doc) and Excel
+# (.xlsx, legacy .xls). The extractor degrades gracefully without them
+# (stdlib OOXML fallback for .docx/.xlsx), but packaged builds should
+# bundle them for full fidelity including legacy OLE formats.
+python-docx>=1.1
+openpyxl>=3.1
+xlrd>=2.0
 # Build tool. 6.22.1+ added an unconditional onefile parent-process security
 # check that aborts Dockie when it is relaunched from the Inno installer after
 # an auto-update ("Security validation failure: parent process has different

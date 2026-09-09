@@ -85,6 +85,9 @@ COLOR_SECONDARY = QColor(0x75, 0x75, 0x75)            # black54 on white
 COLOR_TERTIARY = QColor(0x8A, 0x8A, 0x8A)             # black38 on white
 COLOR_HINT = QColor(0x9E, 0x9E, 0x9E)                 # placeholder
 COLOR_PDF_ICON = QColor(0xF4, 0x43, 0x36)             # Material red
+COLOR_DOC_ICON = QColor(0x2B, 0x57, 0x9A)             # Word blue
+COLOR_XLS_ICON = QColor(0x21, 0x73, 0x46)             # Excel green
+COLOR_TXT_ICON = QColor(0x61, 0x61, 0x61)             # grey for text/other
 COLOR_DIVIDER = QColor(0, 0, 0, 31)                   # black12
 COLOR_HOURGLASS = QColor(0x9E, 0x9E, 0x9E)            # Colors.grey
 
@@ -117,7 +120,7 @@ DISMISS_KEYS = {
 
 HINT_TEXT = 'What file are you looking for?'
 NOT_READY_TITLE = 'Index not ready'
-NOT_READY_SUBTITLE = 'The PDF index is still being built. Please wait.'
+NOT_READY_SUBTITLE = 'The document index is still being built. Please wait.'
 
 # Content search drives off the FTS5 index (created by db._migrate_fts);
 # SEARCH_SQL is the fallback for databases that predate FTS5. Both rank
@@ -451,17 +454,33 @@ class _SearchIcon(QWidget):
         p.drawLine(QPointF(11.5, 11.5), QPointF(17.5, 17.5))
 
 
-class _PdfIcon(QWidget):
-    """PDF document glyph, 28 px, red (Icons.picture_as_pdf)."""
+def _file_badge(path):
+    """(label, color) for a result's file-type glyph, by extension."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.pdf':
+        return 'PDF', COLOR_PDF_ICON
+    if ext in ('.docx', '.doc'):
+        return 'DOC', COLOR_DOC_ICON
+    if ext in ('.xlsx', '.xls'):
+        return 'XLS', COLOR_XLS_ICON
+    if ext == '.txt':
+        return 'TXT', COLOR_TXT_ICON
+    return 'FILE', COLOR_TXT_ICON
 
-    def __init__(self, parent=None):
+
+class _FileIcon(QWidget):
+    """Document glyph, 28 px, color + short label per file type
+    (PDF red, DOC blue, XLS green, TXT grey)."""
+
+    def __init__(self, path='', parent=None):
         super().__init__(parent)
+        self._label, self._color = _file_badge(path)
         self.setFixedSize(28, 28)
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        red = COLOR_PDF_ICON
+        color = self._color
         body = QPainterPath()
         body.moveTo(3, 2)
         body.lineTo(17, 2)
@@ -469,19 +488,27 @@ class _PdfIcon(QWidget):
         body.lineTo(25, 26)
         body.lineTo(3, 26)
         body.closeSubpath()
-        p.setPen(QPen(red, 1.6))
+        p.setPen(QPen(color, 1.6))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(body)
         # Fold crease.
         p.drawLine(17, 2, 17, 10)
         p.drawLine(17, 10, 25, 10)
-        # 'PDF' label.
+        # File-type label.
         f = QFont(self.font())
         f.setPixelSize(8)
         f.setBold(True)
         p.setFont(f)
-        p.setPen(red)
-        p.drawText(QRectF(3, 12, 22, 14), Qt.AlignmentFlag.AlignCenter, 'PDF')
+        p.setPen(color)
+        p.drawText(QRectF(3, 12, 22, 14), Qt.AlignmentFlag.AlignCenter,
+                   self._label)
+
+
+class _PdfIcon(_FileIcon):
+    """Backward-compat alias: the old PDF-only glyph."""
+
+    def __init__(self, parent=None):
+        super().__init__('file.pdf', parent)
 
 
 class _Divider(QWidget):
@@ -607,7 +634,7 @@ class _ResultRow(QWidget):
         row.setContentsMargins(12, 12, 12, 12)
         row.setSpacing(12)
 
-        row.addWidget(_PdfIcon(), 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(_FileIcon(path), 0, Qt.AlignmentFlag.AlignTop)
 
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
