@@ -1,4 +1,8 @@
-"""PDF filesystem scanner — finds all PDFs with aggressive directory pruning."""
+"""Document filesystem scanner — finds supported documents with aggressive directory pruning.
+
+Indexed types (see SUPPORTED_EXTENSIONS): PDF, Word (.docx/.doc),
+Excel (.xlsx/.xls) and plain text (.txt).
+"""
 
 import os
 
@@ -46,6 +50,26 @@ SKIP_USER_SUBDIRS = [
     r'.nuget', r'.m2', r'.gradle', r'.cargo', r'.rustup', r'.yarn',
 ]
 
+# Every file type Dockie indexes. Extension match is case-insensitive
+# (see is_supported_file): '.PDF', '.DocX', … all count.
+#   .pdf          PDF (PyMuPDF)
+#   .docx / .doc  Word (python-docx when installed, else stdlib OOXML
+#                 fallback for .docx; legacy binary .doc needs python-docx)
+#   .xlsx / .xls  Excel (openpyxl when installed, else stdlib OOXML
+#                 fallback for .xlsx; legacy binary .xls needs xlrd)
+#   .txt          plain text (stdlib, encoding-sniffed)
+SUPPORTED_EXTENSIONS = frozenset({
+    '.pdf',
+    '.docx', '.doc',
+    '.xlsx', '.xls',
+    '.txt',
+})
+
+
+def is_supported_file(path):
+    """True when `path` has an indexed file extension (case-insensitive)."""
+    return os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS
+
 
 def get_available_roots():
     roots = []
@@ -86,8 +110,8 @@ def _should_skip_root(dirpath, drive):
     return False
 
 
-def find_pdfs(cancel_event=None):
-    """Generator that yields PDF paths from all drives.
+def find_documents(cancel_event=None):
+    """Generator that yields supported document paths from all drives.
     Optionally accepts a threading.Event to cancel mid-scan."""
     roots = get_available_roots()
     applog.log(f'Scanner: scanning {len(roots)} drive(s): {", ".join(roots)}')
@@ -117,7 +141,7 @@ def find_pdfs(cancel_event=None):
                 for fname in filenames:
                     if cancel_event and cancel_event.is_set():
                         return
-                    if fname.lower().endswith('.pdf'):
+                    if is_supported_file(fname):
                         walked += 1
                         yield os.path.join(dirpath, fname)
         except PermissionError:
@@ -125,4 +149,11 @@ def find_pdfs(cancel_event=None):
         except Exception:
             applog.log_exc(f'Scanner: unexpected error on {root}')
             continue
-        applog.log(f'Scanner: finished {root} ({walked:,} PDFs)')
+        applog.log(f'Scanner: finished {root} ({walked:,} documents)')
+
+
+def find_pdfs(cancel_event=None):
+    """Backward-compat alias: PDF-only view over find_documents()."""
+    for path in find_documents(cancel_event):
+        if path.lower().endswith('.pdf'):
+            yield path

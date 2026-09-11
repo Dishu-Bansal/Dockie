@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 
-from scanner import find_pdfs, get_available_roots
+from scanner import find_documents, get_available_roots, is_supported_file
 from content_extractor import extract_text
 import db
 import applog
@@ -83,15 +83,18 @@ _watcher = None  # holds the watchdog Observer once started
 
 
 # ── File watcher ──
-class PdfWatcher(FileSystemEventHandler):
+class DocumentWatcher(FileSystemEventHandler):
+    """Watchdog handler: keeps the index in sync for every supported
+    document type (PDF, Word, Excel, text)."""
+
     def on_created(self, event):
-        if event.is_directory or not event.src_path.lower().endswith('.pdf'):
+        if event.is_directory or not is_supported_file(event.src_path):
             return
         self._with_conn(lambda c: db.insert_scan_result(c, event.src_path))
         _state.extract_wake.set()
 
     def on_modified(self, event):
-        if event.is_directory or not event.src_path.lower().endswith('.pdf'):
+        if event.is_directory or not is_supported_file(event.src_path):
             return
         self._with_conn(lambda c: db.mark_pending(c, event.src_path))
         _state.extract_wake.set()
@@ -101,20 +104,20 @@ class PdfWatcher(FileSystemEventHandler):
             return
         src = event.src_path
         dst = event.dest_path
-        src_is_pdf = src.lower().endswith('.pdf')
-        dst_is_pdf = dst.lower().endswith('.pdf')
+        src_supported = is_supported_file(src)
+        dst_supported = is_supported_file(dst)
 
-        if src_is_pdf and dst_is_pdf:
+        if src_supported and dst_supported:
             self._with_conn(lambda c: db.move_file(c, src, dst))
             _state.extract_wake.set()
-        elif src_is_pdf:
+        elif src_supported:
             self._with_conn(lambda c: db.mark_deleted(c, src))
-        elif dst_is_pdf:
+        elif dst_supported:
             self._with_conn(lambda c: db.insert_scan_result(c, dst))
             _state.extract_wake.set()
 
     def on_deleted(self, event):
-        if event.is_directory or not event.src_path.lower().endswith('.pdf'):
+        if event.is_directory or not is_supported_file(event.src_path):
             return
         self._with_conn(lambda c: db.mark_deleted(c, event.src_path))
 
@@ -130,15 +133,19 @@ class PdfWatcher(FileSystemEventHandler):
             c.close()
 
 
+# Backward-compat alias (tests / external callers used the old name).
+PdfWatcher = DocumentWatcher
+
+
 # ── Scan + Extract pipeline ──
 def run_scan():
-    log('Scan started — walking filesystem for PDFs...')
+    log('Scan started — walking filesystem for documents...')
     conn = db.get_conn()
     try:
         existing = db.get_all_paths(conn)
         log(f'Scan: {len(existing):,} paths already in DB')
         count = 0
-        for path in find_pdfs(_state.cancel):
+        for path in find_documents(_state.cancel):
             count += 1
             if path not in existing:
                 db.insert_scan_result(conn, path)
@@ -179,7 +186,7 @@ def diff_scan():
         pending_changes = 0
         last_commit = time.time()
 
-        for path in find_pdfs(_state.cancel):
+        for path in find_documents(_state.cancel):
             if _state.cancel.is_set():
                 conn.commit()
                 log('Diff scan cancelled')
@@ -349,7 +356,7 @@ def start_watcher():
             return None
         log(f'Watcher: starting on {len(roots)} drives: {", ".join(roots)}')
         observer = Observer()
-        handler = PdfWatcher()
+        handler = DocumentWatcher()
         for r in roots:
             observer.schedule(handler, r, recursive=True)
         observer.start()

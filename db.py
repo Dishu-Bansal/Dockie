@@ -111,7 +111,7 @@ def _migrate_fts(conn):
 
 
 def insert_scan_result(conn, path):
-    """Insert a newly scanned PDF path. Only inserts if not already present."""
+    """Insert a newly scanned document path. Only inserts if not already present."""
     filename = os.path.basename(path)
     try:
         stat = os.stat(path)
